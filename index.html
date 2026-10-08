@@ -143,43 +143,63 @@
 'use strict';
 
 // ---------- Record type registry ----------
-const TYPES = {
-  A:1, NS:2, CNAME:5, SOA:6, PTR:12, HINFO:13, MX:15, TXT:16, RP:17, AFSDB:18, AAAA:28, LOC:29, SRV:33,
-  NAPTR:35, KX:36, CERT:37, DNAME:39, APL:42, DS:43, SSHFP:44, IPSECKEY:45, RRSIG:46, NSEC:47, DNSKEY:48,
-  DHCID:49, NSEC3:50, NSEC3PARAM:51, TLSA:52, SMIMEA:53, HIP:55, CDS:59, CDNSKEY:60, OPENPGPKEY:61, CSYNC:62,
-  ZONEMD:63, SVCB:64, HTTPS:65, SPF:99, EUI48:108, EUI64:109, URI:256, CAA:257,
+// One row per record type. num: wire code. names: which rdata fields hold domain names ('all', 'last', or
+// indexes). hex: rdata ends in a hex digest. text: rdata is character-strings. apex/host: swept at the zone apex
+// and at guessed hostnames. dnssec: swept only with DNSSEC on. zone: where the record lives if not in this zone's
+// body ('parent' for the apex DS, 'signer' for signature chain records). order: position in the zone file.
+const RR = {
+  SOA: { num: 6, names: [0, 1], apex: true, order: 0 },
+  NS: { num: 2, names: 'all', apex: true, host: true, order: 1 },
+  A: { num: 1, apex: true, host: true, order: 2 },
+  AAAA: { num: 28, apex: true, host: true, order: 3 },
+  CNAME: { num: 5, names: 'all', apex: true, host: true, order: 4 },
+  DNAME: { num: 39, names: 'all', apex: true, order: 5 },
+  MX: { num: 15, names: 'last', apex: true, host: true, order: 6 },
+  TXT: { num: 16, text: true, apex: true, host: true, order: 7 },
+  SPF: { num: 99, text: true, apex: true, order: 8 },
+  SRV: { num: 33, names: 'last', apex: true, host: true, order: 9 },
+  CAA: { num: 257, apex: true, host: true, order: 10 },
+  HTTPS: { num: 65, apex: true, host: true, order: 11 },
+  SVCB: { num: 64, apex: true, order: 12 },
+  TLSA: { num: 52, hex: true, apex: true, order: 13 },
+  SSHFP: { num: 44, hex: true, apex: true, order: 14 },
+  NAPTR: { num: 35, names: 'last', apex: true, order: 15 },
+  PTR: { num: 12, names: 'all', apex: true, order: 16 },
+  HINFO: { num: 13, apex: true, order: 17 },
+  RP: { num: 17, names: [0, 1], apex: true, order: 18 },
+  LOC: { num: 29, apex: true, order: 19 },
+  URI: { num: 256, apex: true, order: 20 },
+  CERT: { num: 37, apex: true, order: 21 },
+  DNSKEY: { num: 48, apex: true, order: 22 },
+  CDS: { num: 59, hex: true, apex: true, order: 23 },
+  CDNSKEY: { num: 60, apex: true, order: 24 },
+  NSEC3PARAM: { num: 51, apex: true, order: 25 },
+  DS: { num: 43, hex: true, apex: true, zone: 'parent' },
+  OPENPGPKEY: { num: 61, apex: true },
+  SMIMEA: { num: 53, hex: true, apex: true },
+  AFSDB: { num: 18, names: 'last', apex: true },
+  KX: { num: 36, names: 'last', apex: true },
+  IPSECKEY: { num: 45, apex: true },
+  DHCID: { num: 49, apex: true },
+  APL: { num: 42, apex: true },
+  HIP: { num: 55, apex: true },
+  CSYNC: { num: 62, apex: true },
+  ZONEMD: { num: 63, apex: true },
+  EUI48: { num: 108, apex: true },
+  EUI64: { num: 109, apex: true },
+  RRSIG: { num: 46, dnssec: true, zone: 'signer' },
+  NSEC: { num: 47, dnssec: true, zone: 'signer' },
+  NSEC3: { num: 50, dnssec: true, zone: 'signer' },
 };
-const TYPE_NAME = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]));
+const rr = t => RR[t] || {};
+const TYPES = Object.fromEntries(Object.entries(RR).map(([k, v]) => [k, v.num]));
+const TYPE_NAME = Object.fromEntries(Object.entries(RR).map(([k, v]) => [v.num, k]));
 const typeName = n => TYPE_NAME[n] || ('TYPE' + n);
-
-// Types whose rdata contains domain names: lowercased and made absolute so the two resolvers dedupe.
-// The value is which whitespace-separated fields hold a name ('last', or explicit indexes).
-const NAME_DATA = new Map([['NS', 'all'], ['CNAME', 'all'], ['PTR', 'all'], ['DNAME', 'all'], ['MX', 'last'], ['SRV', 'last'],
-  ['KX', 'last'], ['AFSDB', 'last'], ['NAPTR', 'last'], ['SOA', [0, 1]], ['RP', [0, 1]]]);
-// Types whose rdata ends in a hex digest, which Google uppercases and Cloudflare lowercases.
-const HEX_DATA = new Set(['DS', 'CDS', 'SSHFP', 'TLSA', 'SMIMEA']);
-function canonicalData(type, data) {
-  if (type === 'TXT' || type === 'SPF') return unquoteTxt(data);
-  if (HEX_DATA.has(type)) return data.toLowerCase();
-  const spec = NAME_DATA.get(type);
-  if (!spec) return data;
-  const abs = t => { t = t.toLowerCase(); return (t === '.' || t.endsWith('.')) ? t : t + '.'; };
-  if (spec === 'all') return abs(data.trim());
-  const f = data.split(/\s+/);
-  if (spec === 'last') f[f.length - 1] = abs(f[f.length - 1]);
-  else for (const i of spec) if (f[i]) f[i] = abs(f[i]);
-  return f.join(' ');
-}
-// Types queried at the zone apex.
-const APEX_TYPES = ['SOA', 'NS', 'A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'CAA', 'PTR', 'NAPTR', 'DNAME', 'HINFO', 'RP',
-  'LOC', 'SSHFP', 'TLSA', 'CERT', 'URI', 'SPF', 'DNSKEY', 'DS', 'CDS', 'CDNSKEY', 'NSEC3PARAM', 'SVCB', 'HTTPS',
-  'OPENPGPKEY', 'SMIMEA', 'AFSDB', 'KX', 'IPSECKEY', 'DHCID', 'APL', 'HIP', 'CSYNC', 'ZONEMD', 'EUI48', 'EUI64'];
-const DNSSEC_TYPES = ['RRSIG', 'NSEC', 'NSEC3'];
-// Types queried at each guessed hostname. NS catches delegated sub-zones.
-const HOST_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'CAA', 'HTTPS', 'NS'];
+const typeRank = t => rr(t).order ?? 999;
+const APEX_TYPES = Object.keys(RR).filter(t => RR[t].apex);
+const HOST_TYPES = Object.keys(RR).filter(t => RR[t].host);
+const DNSSEC_TYPES = Object.keys(RR).filter(t => RR[t].dnssec);
 const WILDCARD_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT'];
-// Parent-zone and signer-generated types never belong in the exported zone body.
-const ZONE_EXCLUDED = new Set(['DS', 'RRSIG', 'NSEC', 'NSEC3']);
 
 const HOSTS_BASIC = ['www', 'mail', 'smtp', 'imap', 'pop', 'pop3', 'mx', 'mx1', 'mx2', 'webmail', 'email', 'ftp', 'sftp',
   'ns', 'ns1', 'ns2', 'ns3', 'ns4', 'dns', 'dns1', 'dns2', 'api', 'app', 'admin', 'portal', 'dev', 'staging', 'stage', 'test',
@@ -351,8 +371,8 @@ function relative(name, zone) {
   return name;
 }
 
-// Resolver output differs: Google returns TXT unquoted, Cloudflare returns RFC 1035 quoted strings.
-// Everything is stored as the raw character string so the two merge, and re-quoted on output.
+// Both resolvers must produce one record for the same answer: name fields lowercased and absolute, hex digests
+// lowercased, text unquoted. Google returns TXT unquoted and Cloudflare returns RFC 1035 quoted strings.
 function unquoteTxt(data) {
   const s = String(data);
   if (!s.startsWith('"')) return s;
@@ -367,8 +387,25 @@ function quoteTxt(raw) {
   for (let i = 0; i < raw.length; i += 255) chunks.push('"' + raw.slice(i, i + 255).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"');
   return chunks.join(' ') || '""';
 }
+function canonicalData(type, data) {
+  const spec = rr(type);
+  if (spec.text) return unquoteTxt(data);
+  if (spec.hex) return data.toLowerCase();
+  if (!spec.names) return data;
+  const abs = t => { t = t.toLowerCase(); return (t === '.' || t.endsWith('.')) ? t : t + '.'; };
+  if (spec.names === 'all') return abs(data.trim());
+  const f = data.split(/\s+/);
+  if (spec.names === 'last') f[f.length - 1] = abs(f[f.length - 1]);
+  else for (const i of spec.names) if (f[i]) f[i] = abs(f[i]);
+  return f.join(' ');
+}
 function presentData(rec) {
-  return (rec.type === 'TXT' || rec.type === 'SPF') ? quoteTxt(rec.data) : rec.data;
+  return rr(rec.type).text ? quoteTxt(rec.data) : rec.data;
+}
+function parseSoa(data) {
+  const f = String(data).split(/\s+/);
+  if (f.length !== 7) return null;
+  return { primary: f[0], contact: f[1], serial: f[2], refresh: f[3], retry: f[4], expire: f[5], minimum: f[6] };
 }
 
 function reverseName(ip) {
@@ -384,6 +421,7 @@ function reverseName(ip) {
 }
 
 // ---------- Querying ----------
+const isAbort = e => e && e.name === 'AbortError';
 async function dohQuery(resolverKey, name, type, dnssec, signal) {
   const r = RESOLVERS[resolverKey];
   const res = await fetch(r.url(name, type, dnssec), { headers: r.headers, signal });
@@ -410,7 +448,7 @@ async function runPool(tasks, concurrency, signal) {
   async function worker() {
     while (i < tasks.length && !signal.aborted) {
       const t = tasks[i++];
-      try { await t(); } catch (e) { if (e.name !== 'AbortError') { log(`! ${e.message}`); state.errors++; } }
+      try { await t(); } catch (e) { if (!isAbort(e)) { log(`! ${e.message}`); state.errors++; } }
       state.done++;
       if (state.done % 7 === 0 || state.done === state.total) renderProgress();
     }
@@ -433,18 +471,18 @@ async function findZone(name, resolverKey, signal) {
   while (labelsOf(candidate).length >= 2) {
     let j;
     try { j = await dohQuery(resolverKey, candidate, 'SOA', false, signal); }
-    catch (e) { if (e.name === 'AbortError') throw e; log(`! ${e.message}`); candidate = parentOf(candidate); continue; }
+    catch (e) { if (isAbort(e)) throw e; log(`! ${e.message}`); candidate = parentOf(candidate); continue; }
     if (inputStatus === null) inputStatus = j.Status;
     log(`SOA ${candidate} -> status ${j.Status}`);
-    const soa = (j.Answer || []).find(a => a.type === 6 && fqdn(a.name) === candidate);
+    const soa = (j.Answer || []).find(a => a.type === TYPES.SOA && fqdn(a.name) === candidate);
     if (soa) return { zone: candidate, soa: addRecord(resolverKey, soa), inputStatus };
-    const auth = (j.Authority || []).find(a => a.type === 6);
+    const auth = (j.Authority || []).find(a => a.type === TYPES.SOA);
     if (auth && j.Status !== 3) {
       const owner = fqdn(auth.name);
       if (underZone(candidate, owner) && labelsOf(owner).length >= 2) {
         // Confirm the apex answers its own SOA rather than trusting a cached negative answer.
-        const k = await dohQuery(resolverKey, owner, 'SOA', false, signal).catch(e => { if (e.name === 'AbortError') throw e; return null; });
-        const s = k && (k.Answer || []).find(a => a.type === 6 && fqdn(a.name) === owner);
+        const k = await dohQuery(resolverKey, owner, 'SOA', false, signal).catch(e => { if (isAbort(e)) throw e; return null; });
+        const s = k && (k.Answer || []).find(a => a.type === TYPES.SOA && fqdn(a.name) === owner);
         if (s) return { zone: owner, soa: addRecord(resolverKey, s), inputStatus };
       }
     }
@@ -492,7 +530,7 @@ async function dump() {
     // Name servers first, so the summary and the glue rows exist before the sweep.
     const nsSet = new Set();
     await runPool(state.resolvers.map(r => makeTask(r, found.zone, 'NS', dnssec, signal, j => {
-      for (const a of (j.Answer || [])) if (a.type === 2) nsSet.add(fqdn(a.data));
+      for (const a of (j.Answer || [])) if (a.type === TYPES.NS) nsSet.add(fqdn(a.data));
     })), 2, signal);
     state.nsHosts = [...nsSet].sort();
     const nsTasks = [];
@@ -540,7 +578,7 @@ async function dump() {
     const secs = ((Date.now() - state.startedAt) / 1000).toFixed(1);
     setStatus(signal.aborted ? 'Stopped.' : `Done in ${secs}s. ${state.records.size} unique records, ${state.errors} failed queries.`);
   } catch (e) {
-    if (e.name !== 'AbortError') { notice('bad', e.message); log('! ' + e.message); }
+    if (!isAbort(e)) { notice('bad', e.message); log('! ' + e.message); }
     setStatus('Stopped.');
   } finally {
     setRunning(false);
@@ -554,8 +592,9 @@ function scopeOf(rec) {
   if (!z) return 'ext';
   if (rec.name.endsWith('.arpa.')) return 'rev';
   if (!underZone(rec.name, z)) return 'ext';
-  if (rec.type === 'DS' && rec.name === z) return 'parent';
-  if (ZONE_EXCLUDED.has(rec.type)) return 'sig';
+  const home = rr(rec.type).zone;
+  if (home === 'parent' && rec.name === z) return 'parent';
+  if (home === 'signer') return 'sig';
   for (const d of state.delegations) {
     if (rec.name === d) return rec.type === 'NS' || rec.type === 'DS' ? 'zone' : 'child';
     if (rec.name.endsWith('.' + d)) return isGlueFor(rec, d) ? 'zone' : 'child';
@@ -567,13 +606,13 @@ function isGlueFor(rec, delegation) {
   return [...state.records.values()].some(n => n.type === 'NS' && n.name === delegation && n.data === rec.name);
 }
 const SCOPE_ORDER = ['zone', 'child', 'parent', 'sig', 'ext', 'rev'];
-function scopeRank(s) { const i = SCOPE_ORDER.indexOf(s); return String(i < 0 ? 9 : i); }
+function scopeRank(s) { const i = SCOPE_ORDER.indexOf(s); return String(i < 0 ? 99 : i).padStart(2, '0'); }
+// Sort key for the Name column: zone records first, then names grouped by suffix (labels reversed so
+// "api.dev" sorts next to "www.dev", not next to "api").
+function nameKey(rec, scope) { return scopeRank(scope) + relative(rec.name, state.zone).split('.').reverse().join('.'); }
 const SCOPE_LABEL = { zone: 'zone', ext: 'external', rev: 'reverse', child: 'child zone', parent: 'parent zone', sig: 'dnssec' };
 
 // ---------- Zone file ----------
-const TYPE_ORDER = ['SOA', 'NS', 'A', 'AAAA', 'CNAME', 'DNAME', 'MX', 'TXT', 'SPF', 'SRV', 'CAA', 'HTTPS', 'SVCB', 'TLSA', 'SSHFP',
-  'NAPTR', 'PTR', 'HINFO', 'RP', 'LOC', 'URI', 'CERT', 'DNSKEY', 'CDS', 'CDNSKEY', 'NSEC3PARAM'];
-function typeRank(t) { const i = TYPE_ORDER.indexOf(t); return i < 0 ? 999 : i; }
 function zoneRecords() {
   return [...state.records.values()].filter(r => scopeOf(r) === 'zone');
 }
@@ -581,10 +620,9 @@ function buildZoneFile() {
   const z = state.zone;
   const recs = zoneRecords();
   const soa = recs.find(r => r.type === 'SOA' && r.name === z);
-  const soaFields = soa ? soa.data.split(/\s+/) : [];
-  const minimum = soaFields.length === 7 ? Number(soaFields[6]) : null;
+  const fields = soa ? parseSoa(soa.data) : null;
   const ttls = recs.map(r => r.ttl).sort((a, b) => a - b);
-  const defaultTtl = minimum || (ttls.length ? ttls[Math.floor(ttls.length / 2)] : 3600);
+  const defaultTtl = fields ? Number(fields.minimum) : (ttls.length ? ttls[Math.floor(ttls.length / 2)] : 3600);
   const out = [];
   out.push(`; Zone file for ${z}`);
   out.push(`; Generated ${new Date().toISOString()} by DNS Dump`);
@@ -594,13 +632,9 @@ function buildZoneFile() {
   out.push(`$ORIGIN ${z}`);
   out.push(`$TTL ${defaultTtl}`);
   out.push('');
-  if (soa && soaFields.length === 7) {
-    out.push(`@\t${soa.ttl}\tIN\tSOA\t${soaFields[0]} ${soaFields[1]} (`);
-    out.push(`\t\t\t\t${soaFields[2]}\t; serial`);
-    out.push(`\t\t\t\t${soaFields[3]}\t; refresh`);
-    out.push(`\t\t\t\t${soaFields[4]}\t; retry`);
-    out.push(`\t\t\t\t${soaFields[5]}\t; expire`);
-    out.push(`\t\t\t\t${soaFields[6]}\t; minimum`);
+  if (fields) {
+    out.push(`@\t${soa.ttl}\tIN\tSOA\t${fields.primary} ${fields.contact} (`);
+    for (const k of ['serial', 'refresh', 'retry', 'expire', 'minimum']) out.push(`\t\t\t\t${fields[k]}\t; ${k}`);
     out.push(`\t\t\t\t)`);
   } else if (soa) {
     out.push(`@\t${soa.ttl}\tIN\tSOA\t${soa.data}`);
@@ -657,10 +691,10 @@ function visibleRecords() {
     let va, vb;
     if (key === 'ttl') { va = a.r.ttl; vb = b.r.ttl; }
     else if (key === 'type') { va = typeRank(a.r.type) * 1000 + a.r.typeNum; vb = typeRank(b.r.type) * 1000 + b.r.typeNum; }
-    else if (key === 'scope') { va = a.scope; vb = b.scope; }
+    else if (key === 'scope') { va = scopeRank(a.scope); vb = scopeRank(b.scope); }
     else if (key === 'source') { va = [...a.r.sources].join(); vb = [...b.r.sources].join(); }
     else if (key === 'data') { va = a.r.data; vb = b.r.data; }
-    else { va = scopeRank(a.scope) + relative(a.r.name, state.zone).split('.').reverse().join('.'); vb = scopeRank(b.scope) + relative(b.r.name, state.zone).split('.').reverse().join('.'); }
+    else { va = nameKey(a.r, a.scope); vb = nameKey(b.r, b.scope); }
     if (va < vb) return -dir; if (va > vb) return dir;
     return typeRank(a.r.type) - typeRank(b.r.type) || a.r.data.localeCompare(b.r.data);
   });
@@ -762,7 +796,8 @@ function renderSummary() {
   const at = (name, type) => recs.filter(r => r.name === name && r.type === type);
   const txtAt = name => at(name, 'TXT').map(r => r.data);
 
-  const soaItems = state.soa ? [`${state.soa.data.split(/\s+/)[0]} (primary)`, `${state.soa.data.split(/\s+/)[1].replace('.', '@').replace(/\.$/, '')} (contact)`, `serial ${state.soa.data.split(/\s+/)[2]}`] : [];
+  const soa = state.soa && parseSoa(state.soa.data);
+  const soaItems = soa ? [`${soa.primary} (primary)`, `${soa.contact.replace('.', '@').replace(/\.$/, '')} (contact)`, `serial ${soa.serial}`] : [];
   box.appendChild(card('Zone ' + z, soaItems));
 
   box.appendChild(card('Name servers', state.nsHosts.map(ns => {
@@ -850,7 +885,14 @@ el('exportJson').addEventListener('click', () => download(zoneBase() + '-dns.jso
 const params = new URLSearchParams(location.search);
 if (params.get('d')) { el('domain').value = params.get('d'); dump(); }
 
-window.dnsDump = { state, buildZoneFile, normalizeInput, unquoteTxt, quoteTxt, reverseName, findZone, dump };
+// The stable surface for scripts and tests. Internal state stays private; getRecords() returns a snapshot.
+window.dnsDump = Object.freeze({
+  version: 1,
+  dump, buildZoneFile, toCsv, toJson,
+  getRecords: () => [...state.records.values()].map(r => ({ name: r.name, type: r.type, ttl: r.ttl, data: r.data, scope: scopeOf(r), sources: [...r.sources] })),
+  getStatus: () => ({ zone: state.zone, nameServers: [...state.nsHosts], done: state.done, total: state.total, errors: state.errors }),
+  normalizeInput, canonicalData, quoteTxt, unquoteTxt, relative, scopeOf, reverseName, parseSoa, RR,
+});
 </script>
 </body>
 </html>
