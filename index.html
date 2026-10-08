@@ -8,7 +8,7 @@
 <style>
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #5c6670; --line: #d9dee4;
-    --accent: #1f6feb; --accent-ink: #ffffff; --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+    --accent: #1f6feb; --accent-ink: #ffffff; --ok: #166b2e; --warn: #7a5100; --bad: #cf222e;
     --chip: #eef1f5; --chip-on: #1f6feb; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   @media (prefers-color-scheme: dark) {
@@ -32,8 +32,11 @@
   button { font: inherit; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
   button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
   button:disabled { opacity: .5; cursor: default; }
+  input[aria-invalid="true"] { border-color: var(--bad) !important; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .options { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; color: var(--muted); font-size: 14px; align-items: center; }
   .options label { display: inline-flex; gap: 6px; align-items: center; }
+  .options input:disabled + span, .options select:disabled { opacity: .5; }
   .options select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
   details.extra { margin-top: 10px; color: var(--muted); font-size: 14px; }
   details.extra textarea { width: 100%; min-height: 64px; margin-top: 6px; font-family: var(--mono); font-size: 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); padding: 8px; }
@@ -55,13 +58,23 @@
   .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
   .chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--chip); border: 1px solid transparent; cursor: pointer; color: var(--ink); font-family: var(--mono); }
   .chip.on { background: var(--chip-on); color: #fff; }
-  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  .tablebar { position: sticky; top: 0; z-index: 2; display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 12px; margin: 0 -16px 8px; background: var(--bg); border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+  .tablebar b { color: var(--ink); font-family: var(--mono); font-weight: 600; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background-color: var(--panel);
+    /* Fades at the edges only while there is content to scroll to on that side. */
+    background-image: linear-gradient(to right, var(--panel) 40%, transparent), linear-gradient(to left, var(--panel) 40%, transparent),
+      linear-gradient(to right, rgba(0,0,0,.18), transparent), linear-gradient(to left, rgba(0,0,0,.18), transparent);
+    background-position: 0 0, 100% 0, 0 0, 100% 0; background-size: 48px 100%, 48px 100%, 16px 100%, 16px 100%;
+    background-repeat: no-repeat; background-attachment: local, local, scroll, scroll; }
+  @media (min-width: 900px) { .tablewrap { overflow: visible; } }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { position: sticky; top: 0; background: var(--panel); font-weight: 600; cursor: pointer; white-space: nowrap; user-select: none; }
+  th { position: sticky; top: 38px; background: var(--panel); font-weight: 600; white-space: nowrap; padding: 0; }
+  th button { font: inherit; font-weight: 600; color: var(--ink); background: none; border: 0; border-radius: 0; padding: 7px 10px; text-align: left; cursor: pointer; }
   th .dir { color: var(--muted); font-size: 11px; margin-left: 4px; }
-  td.mono, td.data { font-family: var(--mono); }
-  td.data { word-break: break-all; max-width: 640px; }
+  td.mono, td.data, td.name { font-family: var(--mono); }
+  td.name { overflow-wrap: anywhere; min-width: 120px; max-width: 360px; }
+  td.data { word-break: break-all; min-width: 240px; max-width: 640px; }
   td.ttl { text-align: right; font-variant-numeric: tabular-nums; }
   tr.outzone td { color: var(--muted); }
   .scope { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--chip); white-space: nowrap; }
@@ -75,13 +88,13 @@
 </style>
 </head>
 <body>
-<main>
+<main id="top">
   <h1>DNS Dump</h1>
   <p class="sub">Find a domain's zone and name servers, sweep every record type it can expose, then export the result as a BIND zone file.</p>
 
   <section class="panel">
     <form class="query" id="form">
-      <input type="text" id="domain" placeholder="example.com, mail.example.co.za, or https://www.example.com/path" autocomplete="off" spellcheck="false" autofocus>
+      <input type="text" id="domain" placeholder="example.com, mail.example.co.za, or https://www.example.com/path" autocomplete="off" autocapitalize="off" inputmode="url" spellcheck="false" aria-label="Domain, hostname or URL" autofocus>
       <button type="submit" class="primary" id="run">Dump</button>
       <button type="button" id="stop" disabled>Stop</button>
     </form>
@@ -93,20 +106,21 @@
           <option value="cloudflare">Cloudflare only</option>
         </select>
       </label>
-      <label><input type="checkbox" id="deep"> Deep host sweep (more guessed hostnames)</label>
-      <label><input type="checkbox" id="dnssec"> DNSSEC (RRSIG, NSEC)</label>
-      <label><input type="checkbox" id="ptr" checked> Reverse-lookup every IP found</label>
+      <label><input type="checkbox" id="deep"> <span>Deep host sweep (more guessed hostnames)</span></label>
+      <label><input type="checkbox" id="dnssec"> <span>DNSSEC (RRSIG, NSEC)</span></label>
+      <label><input type="checkbox" id="ptr" checked> <span>Reverse-lookup every IP found</span></label>
     </div>
     <details class="extra">
       <summary>Extra hostnames to probe (one per line, relative to the zone or fully qualified)</summary>
       <textarea id="extra" placeholder="intranet&#10;vpn2&#10;legacy.example.com"></textarea>
     </details>
-    <div class="status" id="status">
+    <div class="status" id="status" role="status" aria-live="polite">
       <span id="statusText">Idle. DNS-over-HTTPS from the browser: no server, no install.</span>
       <div class="bar"><div id="progress"></div></div>
       <span id="counter"></span>
     </div>
-    <div id="notices"></div>
+    <div id="notices" role="alert"></div>
+    <details class="log"><summary>Query log</summary><pre id="log"></pre></details>
   </section>
 
   <section id="summary" class="cards hidden"></section>
@@ -121,22 +135,22 @@
       <button id="exportJson">JSON</button>
     </div>
     <div class="chips" id="chips"></div>
+    <div class="tablebar"><span><b id="barZone"></b> <span id="barCount"></span></span><a href="#top">Back to search</a></div>
     <div class="tablewrap">
       <table id="table">
         <thead><tr>
-          <th data-key="name">Name<span class="dir"></span></th>
-          <th data-key="type">Type<span class="dir"></span></th>
-          <th data-key="ttl">TTL<span class="dir"></span></th>
-          <th data-key="data">Data<span class="dir"></span></th>
-          <th data-key="scope">Scope<span class="dir"></span></th>
-          <th data-key="source">Source<span class="dir"></span></th>
+          <th data-key="name" aria-sort="ascending"><button type="button" title="Relative to the zone. @ is the apex.">Name<span class="dir"></span></button></th>
+          <th data-key="type"><button type="button">Type<span class="dir"></span></button></th>
+          <th data-key="ttl"><button type="button">TTL<span class="dir"></span></button></th>
+          <th data-key="data"><button type="button">Data<span class="dir"></span></button></th>
+          <th data-key="scope"><button type="button" title="Which zone the record belongs to. Only zone rows go into the zone file.">Scope<span class="dir"></span></button></th>
+          <th data-key="source"><button type="button">Source<span class="dir"></span></button></th>
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
       <div class="empty hidden" id="empty">No records match.</div>
     </div>
     <p class="footer" id="footer"></p>
-    <details class="log"><summary>Query log</summary><pre id="log"></pre></details>
   </section>
 </main>
 
@@ -340,6 +354,8 @@ const state = {
   abort: null,
   done: 0, total: 0,
   errors: 0,
+  answered: 0,
+  completed: 0,
   logLines: [],
   resolvers: [],
   startedAt: 0,
@@ -366,6 +382,7 @@ function normalizeInput(raw) {
 function labelsOf(n) { return fqdn(n).slice(0, -1).split('.').filter(Boolean); }
 function parentOf(n) { const l = labelsOf(n); l.shift(); return l.length ? l.join('.') + '.' : '.'; }
 function underZone(name, zone) { return name === zone || name.endsWith('.' + zone); }
+const show = n => String(n).replace(/\.$/, '');
 function relative(name, zone) {
   if (name === zone) return '@';
   if (name.endsWith('.' + zone)) return name.slice(0, -(zone.length + 1));
@@ -442,6 +459,7 @@ async function dohQuery(resolverKey, name, type, dnssec, signal) {
   const r = RESOLVERS[resolverKey];
   const res = await fetch(r.url(name, type, dnssec), { headers: r.headers, signal });
   if (!res.ok) throw new Error(`${r.label} HTTP ${res.status} for ${name} ${type}`);
+  state.answered++;
   return res.json();
 }
 
@@ -465,16 +483,26 @@ async function runPool(tasks, concurrency, signal) {
     while (i < tasks.length && !signal.aborted) {
       const t = tasks[i++];
       try { await t(); } catch (e) { if (!isAbort(e)) { log(`! ${e.message}`); state.errors++; } }
-      state.done++;
+      state.done++; state.completed++;
       if (state.done % 7 === 0 || state.done === state.total) renderProgress();
     }
   }
   await Promise.all(Array.from({ length: concurrency }, worker));
 }
 
+// A resolver occasionally drops one request (a 5xx, a response without CORS headers, or a 429 when a big
+// sweep trips its per-client limit); one retry after a pause clears most of them.
+async function dohQueryRetry(resolverKey, name, type, dnssec, signal) {
+  try { return await dohQuery(resolverKey, name, type, dnssec, signal); }
+  catch (e) {
+    if (isAbort(e)) throw e;
+    await new Promise(r => setTimeout(r, /429/.test(e.message) ? 1500 : 400));
+    return dohQuery(resolverKey, name, type, dnssec, signal);
+  }
+}
 function makeTask(resolverKey, name, type, dnssec, signal, onAnswer) {
   return async () => {
-    const j = await dohQuery(resolverKey, name, type, dnssec, signal);
+    const j = await dohQueryRetry(resolverKey, name, type, dnssec, signal);
     for (const a of (j.Answer || [])) addRecord(resolverKey, a);
     if (onAnswer) onAnswer(j);
   };
@@ -511,7 +539,8 @@ async function dump() {
   const raw = el('domain').value;
   const input = normalizeInput(raw);
   clearNotices();
-  if (!input) { notice('bad', 'Enter a domain name, hostname or URL.'); return; }
+  if (!input) { markInvalid(true); notice('bad', 'Enter a domain name, hostname or URL, like example.com.'); setStatus('Waiting for a domain.'); return; }
+  markInvalid(false);
 
   resetState();
   state.input = input;
@@ -532,13 +561,14 @@ async function dump() {
     let found = null;
     for (const r of state.resolvers) { found = await findZone(input, r, signal); if (found) break; }
     if (!found) {
-      notice('bad', `No zone found for ${input}. The name may not exist, or every DNS-over-HTTPS lookup failed (check the query log).`);
+      if (signal.aborted) { setStatus('Stopped.'); return; }
+      if (state.answered === 0) notice('bad', 'Every DNS-over-HTTPS lookup failed. Check your network, then open the query log below for the errors.');
+      else { markInvalid(true); notice('bad', `${show(input)} does not exist (NXDOMAIN), and no enclosing zone answered.`); }
       setStatus('Failed.');
       return;
     }
     state.zone = found.zone;
     state.soa = found.soa;
-    const show = n => n.replace(/\.$/, '');
     if (found.inputStatus === 3) notice('warn', `${show(input)} does not exist (NXDOMAIN). Dumping its enclosing zone ${show(found.zone)} instead.`);
     else if (found.zone !== input) notice('warn', `${show(input)} is inside the zone ${show(found.zone)}. Dumping the whole zone.`);
     setStatus(`Zone ${found.zone}. Fetching name servers …`);
@@ -587,7 +617,7 @@ async function dump() {
       for (const ip of ips) for (const r of state.resolvers) pass2.push(makeTask(r, reverseName(ip), 'PTR', false, signal));
     }
     if (pass2.length) {
-      state.total += pass2.length;
+      state.done = 0; state.total = pass2.length;
       setStatus(`Follow-up: ${state.delegations.size} delegated sub-zone(s), ${pass2.length} queries …`);
       await runPool(pass2, 16, signal);
     }
@@ -681,17 +711,22 @@ function log(line) { state.logLines.push(line); if (state.logLines.length > 2000
 function setStatus(t) { el('statusText').textContent = t; }
 function notice(kind, text) { const d = document.createElement('div'); d.className = 'notice ' + kind; d.textContent = text; el('notices').appendChild(d); }
 function clearNotices() { el('notices').textContent = ''; }
-function setRunning(on) { el('run').disabled = on; el('stop').disabled = !on; el('domain').readOnly = on; }
+function setRunning(on) {
+  el('run').disabled = on; el('stop').disabled = !on; el('domain').readOnly = on;
+  for (const id of ['resolver', 'deep', 'dnssec', 'ptr', 'extra']) el(id).disabled = on;
+}
+function markInvalid(on) { el('domain').setAttribute('aria-invalid', on ? 'true' : 'false'); }
 function renderProgress() {
   const pct = state.total ? Math.min(100, Math.round(100 * state.done / state.total)) : 0;
   el('progress').style.width = pct + '%';
-  el('counter').textContent = state.total ? `${state.done}/${state.total} queries` : '';
+  el('counter').textContent = state.completed ? `${state.completed} queries` : '';
 }
 function showResults() { el('results').classList.remove('hidden'); el('summary').classList.remove('hidden'); }
 function resetState() {
   state.records = new Map(); state.zone = null; state.soa = null; state.nsHosts = []; state.delegations = new Set();
-  state.done = 0; state.total = 0; state.errors = 0; state.logLines = []; state.activeTypes = new Set();
+  state.done = 0; state.total = 0; state.errors = 0; state.answered = 0; state.completed = 0; state.logLines = []; state.activeTypes = new Set();
   el('rows').textContent = ''; el('chips').textContent = ''; el('summary').textContent = ''; el('log').textContent = '';
+  el('results').classList.add('hidden'); el('summary').classList.add('hidden');
   renderProgress();
 }
 
@@ -735,6 +770,7 @@ function renderChips() {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'chip' + (state.activeTypes.has(t) ? ' on' : '');
+    b.setAttribute('aria-pressed', state.activeTypes.has(t) ? 'true' : 'false');
     b.textContent = `${t} ${counts.get(t)}`;
     b.onclick = () => { state.activeTypes.has(t) ? state.activeTypes.delete(t) : state.activeTypes.add(t); render(); };
     box.appendChild(b);
@@ -756,7 +792,7 @@ function renderTable() {
     const tr = document.createElement('tr');
     if (scope !== 'zone') tr.className = 'outzone';
     const cells = [
-      ['mono', scope === 'zone' || scope === 'child' ? relative(r.name, state.zone) : r.name],
+      ['name', scope === 'zone' || scope === 'child' ? relative(r.name, state.zone) : r.name],
       ['mono', r.type],
       ['ttl', String(r.ttl)],
       ['data', presentData(r)],
@@ -776,11 +812,13 @@ function renderTable() {
   tbody.appendChild(frag);
   el('empty').classList.toggle('hidden', list.length > 0);
   const zoneCount = zoneRecords().length;
-  el('footer').textContent = state.records.size
-    ? `${list.length} shown of ${state.records.size} records. ${zoneCount} belong to ${state.zone} and will be written to the zone file. Names are shown relative to the zone; "@" is the apex.`
-    : '';
+  el('footer').textContent = state.records.size ? `${list.length} of ${state.records.size} records shown, ${zoneCount} in the zone file.` : '';
+  el('barZone').textContent = show(state.zone || '');
+  el('barCount').textContent = state.records.size ? `${state.records.size} records` : '';
   for (const th of document.querySelectorAll('th[data-key]')) {
-    th.querySelector('.dir').textContent = th.dataset.key === state.sort.key ? (state.sort.dir > 0 ? '▲' : '▼') : '';
+    const active = th.dataset.key === state.sort.key;
+    th.querySelector('.dir').textContent = active ? (state.sort.dir > 0 ? '▲' : '▼') : '';
+    if (active) th.setAttribute('aria-sort', state.sort.dir > 0 ? 'ascending' : 'descending'); else th.removeAttribute('aria-sort');
   }
 }
 
@@ -885,7 +923,8 @@ el('form').addEventListener('submit', e => { e.preventDefault(); if (!el('run').
 el('stop').addEventListener('click', () => state.abort && state.abort.abort());
 el('filter').addEventListener('input', renderTable);
 el('zoneOnly').addEventListener('change', renderTable);
-for (const th of document.querySelectorAll('th[data-key]')) th.addEventListener('click', () => {
+el('domain').addEventListener('input', () => markInvalid(false));
+for (const th of document.querySelectorAll('th[data-key]')) th.querySelector('button').addEventListener('click', () => {
   const k = th.dataset.key;
   if (state.sort.key === k) state.sort.dir = -state.sort.dir; else state.sort = { key: k, dir: 1 };
   renderTable();
