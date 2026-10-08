@@ -1,0 +1,856 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DNS Dump</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #5c6670; --line: #d9dee4;
+    --accent: #1f6feb; --accent-ink: #ffffff; --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+    --chip: #eef1f5; --chip-on: #1f6feb; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --muted: #8b949e; --line: #30363d;
+      --accent: #388bfd; --ok: #3fb950; --warn: #d29922; --bad: #f85149; --chip: #21262d;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --muted: #8b949e; --line: #30363d;
+    --accent: #388bfd; --ok: #3fb950; --warn: #d29922; --bad: #f85149; --chip: #21262d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1280px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  form.query { display: flex; gap: 8px; flex-wrap: wrap; }
+  form.query input[type=text] { flex: 1 1 320px; font-size: 17px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font-family: var(--mono); }
+  button { font: inherit; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .options { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; color: var(--muted); font-size: 14px; align-items: center; }
+  .options label { display: inline-flex; gap: 6px; align-items: center; }
+  .options select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  details.extra { margin-top: 10px; color: var(--muted); font-size: 14px; }
+  details.extra textarea { width: 100%; min-height: 64px; margin-top: 6px; font-family: var(--mono); font-size: 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); padding: 8px; }
+  .status { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 14px; color: var(--muted); min-height: 24px; }
+  .bar { flex: 1 1 200px; height: 6px; background: var(--chip); border-radius: 3px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  .notice { padding: 10px 12px; border-radius: 8px; margin-top: 10px; font-size: 14px; }
+  .notice.warn { background: color-mix(in srgb, var(--warn) 14%, var(--panel)); color: var(--ink); border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--line)); }
+  .notice.bad { background: color-mix(in srgb, var(--bad) 14%, var(--panel)); border: 1px solid color-mix(in srgb, var(--bad) 50%, var(--line)); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 14px; }
+  .card h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .card ul { margin: 0; padding-left: 0; list-style: none; font-family: var(--mono); font-size: 13px; word-break: break-all; }
+  .card li { padding: 2px 0; }
+  .card .tag { font-family: system-ui, sans-serif; font-size: 12px; padding: 1px 6px; border-radius: 999px; background: var(--chip); color: var(--muted); margin-left: 4px; }
+  .card .tag.ok { color: var(--ok); } .card .tag.bad { color: var(--bad); } .card .tag.warn { color: var(--warn); }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  .toolbar input[type=search] { flex: 1 1 220px; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--chip); border: 1px solid transparent; cursor: pointer; color: var(--ink); font-family: var(--mono); }
+  .chip.on { background: var(--chip-on); color: #fff; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { position: sticky; top: 0; background: var(--panel); font-weight: 600; cursor: pointer; white-space: nowrap; user-select: none; }
+  th .dir { color: var(--muted); font-size: 11px; margin-left: 4px; }
+  td.mono, td.data { font-family: var(--mono); }
+  td.data { word-break: break-all; max-width: 640px; }
+  td.ttl { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.outzone td { color: var(--muted); }
+  .scope { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--chip); white-space: nowrap; }
+  .scope.zone { color: var(--ok); } .scope.ext { color: var(--muted); } .scope.rev { color: var(--warn); } .scope.child { color: var(--warn); } .scope.parent { color: var(--warn); }
+  .empty { padding: 32px; text-align: center; color: var(--muted); }
+  .footer { color: var(--muted); font-size: 13px; margin-top: 12px; }
+  details.log { margin-top: 12px; font-size: 13px; color: var(--muted); }
+  details.log pre { max-height: 240px; overflow: auto; font-size: 12px; background: var(--bg); padding: 8px; border-radius: 8px; }
+  .hidden { display: none !important; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>DNS Dump</h1>
+  <p class="sub">Find a domain's zone and name servers, sweep every record type it can expose, then export the result as a BIND zone file.</p>
+
+  <section class="panel">
+    <form class="query" id="form">
+      <input type="text" id="domain" placeholder="example.com, mail.example.co.za, or https://www.example.com/path" autocomplete="off" spellcheck="false" autofocus>
+      <button type="submit" class="primary" id="run">Dump</button>
+      <button type="button" id="stop" disabled>Stop</button>
+    </form>
+    <div class="options">
+      <label>Resolver
+        <select id="resolver">
+          <option value="both">Google + Cloudflare (merged)</option>
+          <option value="google">Google only</option>
+          <option value="cloudflare">Cloudflare only</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="deep"> Deep host sweep (more guessed hostnames)</label>
+      <label><input type="checkbox" id="dnssec"> DNSSEC (RRSIG, NSEC)</label>
+      <label><input type="checkbox" id="ptr" checked> Reverse-lookup every IP found</label>
+    </div>
+    <details class="extra">
+      <summary>Extra hostnames to probe (one per line, relative to the zone or fully qualified)</summary>
+      <textarea id="extra" placeholder="intranet&#10;vpn2&#10;legacy.example.com"></textarea>
+    </details>
+    <div class="status" id="status">
+      <span id="statusText">Idle. DNS-over-HTTPS from the browser: no server, no install.</span>
+      <div class="bar"><div id="progress"></div></div>
+      <span id="counter"></span>
+    </div>
+    <div id="notices"></div>
+  </section>
+
+  <section id="summary" class="cards hidden"></section>
+
+  <section id="results" class="hidden">
+    <div class="toolbar">
+      <input type="search" id="filter" placeholder="Filter by name, type or data">
+      <label style="font-size:14px;color:var(--muted)"><input type="checkbox" id="zoneOnly"> Zone records only</label>
+      <button id="exportZone" class="primary">Download zone file</button>
+      <button id="copyZone">Copy zone file</button>
+      <button id="exportCsv">CSV</button>
+      <button id="exportJson">JSON</button>
+    </div>
+    <div class="chips" id="chips"></div>
+    <div class="tablewrap">
+      <table id="table">
+        <thead><tr>
+          <th data-key="name">Name<span class="dir"></span></th>
+          <th data-key="type">Type<span class="dir"></span></th>
+          <th data-key="ttl">TTL<span class="dir"></span></th>
+          <th data-key="data">Data<span class="dir"></span></th>
+          <th data-key="scope">Scope<span class="dir"></span></th>
+          <th data-key="source">Source<span class="dir"></span></th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty hidden" id="empty">No records match.</div>
+    </div>
+    <p class="footer" id="footer"></p>
+    <details class="log"><summary>Query log</summary><pre id="log"></pre></details>
+  </section>
+</main>
+
+<script>
+'use strict';
+
+// ---------- Record type registry ----------
+const TYPES = {
+  A:1, NS:2, CNAME:5, SOA:6, PTR:12, HINFO:13, MX:15, TXT:16, RP:17, AFSDB:18, AAAA:28, LOC:29, SRV:33,
+  NAPTR:35, KX:36, CERT:37, DNAME:39, APL:42, DS:43, SSHFP:44, IPSECKEY:45, RRSIG:46, NSEC:47, DNSKEY:48,
+  DHCID:49, NSEC3:50, NSEC3PARAM:51, TLSA:52, SMIMEA:53, HIP:55, CDS:59, CDNSKEY:60, OPENPGPKEY:61, CSYNC:62,
+  ZONEMD:63, SVCB:64, HTTPS:65, SPF:99, EUI48:108, EUI64:109, URI:256, CAA:257,
+};
+const TYPE_NAME = Object.fromEntries(Object.entries(TYPES).map(([k, v]) => [v, k]));
+const typeName = n => TYPE_NAME[n] || ('TYPE' + n);
+
+// Types whose rdata contains domain names: lowercased and made absolute so the two resolvers dedupe.
+// The value is which whitespace-separated fields hold a name ('last', or explicit indexes).
+const NAME_DATA = new Map([['NS', 'all'], ['CNAME', 'all'], ['PTR', 'all'], ['DNAME', 'all'], ['MX', 'last'], ['SRV', 'last'],
+  ['KX', 'last'], ['AFSDB', 'last'], ['NAPTR', 'last'], ['SOA', [0, 1]], ['RP', [0, 1]]]);
+// Types whose rdata ends in a hex digest, which Google uppercases and Cloudflare lowercases.
+const HEX_DATA = new Set(['DS', 'CDS', 'SSHFP', 'TLSA', 'SMIMEA']);
+function canonicalData(type, data) {
+  if (type === 'TXT' || type === 'SPF') return unquoteTxt(data);
+  if (HEX_DATA.has(type)) return data.toLowerCase();
+  const spec = NAME_DATA.get(type);
+  if (!spec) return data;
+  const abs = t => { t = t.toLowerCase(); return (t === '.' || t.endsWith('.')) ? t : t + '.'; };
+  if (spec === 'all') return abs(data.trim());
+  const f = data.split(/\s+/);
+  if (spec === 'last') f[f.length - 1] = abs(f[f.length - 1]);
+  else for (const i of spec) if (f[i]) f[i] = abs(f[i]);
+  return f.join(' ');
+}
+// Types queried at the zone apex.
+const APEX_TYPES = ['SOA', 'NS', 'A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'CAA', 'PTR', 'NAPTR', 'DNAME', 'HINFO', 'RP',
+  'LOC', 'SSHFP', 'TLSA', 'CERT', 'URI', 'SPF', 'DNSKEY', 'DS', 'CDS', 'CDNSKEY', 'NSEC3PARAM', 'SVCB', 'HTTPS',
+  'OPENPGPKEY', 'SMIMEA', 'AFSDB', 'KX', 'IPSECKEY', 'DHCID', 'APL', 'HIP', 'CSYNC', 'ZONEMD', 'EUI48', 'EUI64'];
+const DNSSEC_TYPES = ['RRSIG', 'NSEC', 'NSEC3'];
+// Types queried at each guessed hostname. NS catches delegated sub-zones.
+const HOST_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'CAA', 'HTTPS', 'NS'];
+const WILDCARD_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT'];
+// Parent-zone and signer-generated types never belong in the exported zone body.
+const ZONE_EXCLUDED = new Set(['DS', 'RRSIG', 'NSEC', 'NSEC3']);
+
+const HOSTS_BASIC = ['www', 'mail', 'smtp', 'imap', 'pop', 'pop3', 'mx', 'mx1', 'mx2', 'webmail', 'email', 'ftp', 'sftp',
+  'ns', 'ns1', 'ns2', 'ns3', 'ns4', 'dns', 'dns1', 'dns2', 'api', 'app', 'admin', 'portal', 'dev', 'staging', 'stage', 'test',
+  'beta', 'demo', 'blog', 'shop', 'store', 'cdn', 'static', 'assets', 'media', 'img', 'images', 'files', 'docs', 'help',
+  'support', 'status', 'vpn', 'remote', 'git', 'm', 'mobile', 'autodiscover', 'autoconfig', 'cpanel', 'webdisk', 'whm',
+  'mta-sts', 'sip', 'lyncdiscover', 'msoid', 'enterpriseenrollment', 'enterpriseregistration', 'calendar', 'drive',
+  'cloud', 'login', 'auth', 'sso', 'id', 'my', 'secure', 'pay', 'billing', 'crm', 'erp', 'wiki', 'forum', 'news', 'intranet',
+  'localhost', 'owa', 'exchange', 'mail2', 'smtp2', 'relay', 'bounce', 'bounces', 'track', 'click', 'links', 'go', 'link',
+  'email-link', 'url', 'preview', 'proxy', 'gw', 'gateway', 'fw', 'router', 'nas', 'backup', 'monitor', 'grafana',
+  'jenkins', 'ci', 'gitlab', 'jira', 'confluence', 'sentry', 'metrics', 'www2', 'old', 'new', 'legacy', 'archive', 'web',
+  'web1', 'web2', 'host', 'server', 'srv', 'srv1', 'db', 'mysql', 'sql', 'redis', 'elastic', 'search', 'k8s', 'docker',
+  'node', 'app1', 'app2', 'api2', 'v1', 'v2', 'graphql', 'ws', 'socket', 'push', 'stream', 'video', 'live', 'tv', 'radio',
+  'events', 'careers', 'jobs', 'partners', 'investors', 'press', 'about', 'info', 'contact', 'marketing', 'promo', 'landing',
+  'campaign', 'survey', 'forms', 'book', 'booking', 'reserve', 'order', 'orders', 'checkout', 'cart', 'account', 'accounts',
+  'members', 'community', 'chat', 'meet', 'zoom', 'teams', 'slack', 'discord', 'hub', 'home', 'office', 'corp', 'internal',
+  'local', 'lan', 'wifi', 'guest', 'print', 'printer', 'scan', 'cam', 'camera', 'nvr', 'iot', 'ha', 'hass', 'plex', 'media2'];
+const HOSTS_DEEP = HOSTS_BASIC.concat(['smtp1', 'smtp3', 'mx3', 'mx4', 'mail3', 'mail4', 'imap2', 'pop2', 'mailgate', 'mailhost',
+  'mailserver', 'spam', 'antispam', 'filter', 'list', 'lists', 'listserv', 'newsletter', 'mailer', 'mailing', 'noreply',
+  'no-reply', 'notifications', 'alerts', 'alert', 'ns5', 'ns6', 'dns3', 'dns4', 'ns01', 'ns02', 'nameserver', 'a', 'b', 'c',
+  'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'www1', 'www3',
+  'wwww', 'ww', 'web3', 'web4', 'web01', 'web02', 'app01', 'app02', 'api01', 'api3', 'api-dev', 'api-staging', 'api-test',
+  'dev2', 'dev3', 'uat', 'qa', 'sandbox', 'preprod', 'pre-prod', 'prod', 'production', 'canary', 'alpha', 'rc', 'next',
+  'edge', 'origin', 'origin-www', 'cdn1', 'cdn2', 'static1', 'static2', 'assets1', 'assets2', 'img1', 'img2', 'thumb',
+  'thumbs', 'upload', 'uploads', 'download', 'downloads', 'dl', 'mirror', 'mirrors', 'repo', 'repos', 'packages', 'npm',
+  'pypi', 'maven', 'registry', 'docker-registry', 'harbor', 'nexus', 'artifactory', 'svn', 'hg', 'code', 'gitea', 'gogs',
+  'bitbucket', 'github', 'build', 'builds', 'deploy', 'release', 'releases', 'argo', 'argocd', 'rancher', 'portainer',
+  'kube', 'kubernetes', 'cluster', 'ingress', 'lb', 'lb1', 'lb2', 'haproxy', 'nginx', 'apache', 'iis', 'tomcat', 'wp',
+  'wordpress', 'cms', 'drupal', 'joomla', 'magento', 'shopify', 'woo', 'prestashop', 'opencart', 'ghost', 'hubspot',
+  'salesforce', 'zendesk', 'freshdesk', 'desk', 'helpdesk', 'tickets', 'ticket', 'kb', 'knowledge', 'faq', 'learn',
+  'learning', 'lms', 'moodle', 'training', 'academy', 'school', 'edu', 'library', 'research', 'lab', 'labs', 'data',
+  'analytics', 'stats', 'report', 'reports', 'dashboard', 'dash', 'bi', 'tableau', 'kibana', 'prometheus', 'alertmanager',
+  'loki', 'jaeger', 'zipkin', 'uptime', 'ping', 'health', 'healthcheck', 'nagios', 'zabbix', 'icinga', 'cacti', 'munin',
+  'netdata', 'observium', 'librenms', 'snmp', 'syslog', 'logs', 'log', 'elk', 'splunk', 'graylog', 'vault', 'secrets',
+  'keycloak', 'okta', 'idp', 'saml', 'oauth', 'oidc', 'ldap', 'ad', 'dc', 'dc1', 'dc2', 'pdc', 'bdc', 'kerberos', 'radius',
+  'tacacs', 'nps', 'pki', 'ca', 'crl', 'ocsp', 'cert', 'certs', 'ssl', 'tls', 'acme', 'letsencrypt', 'ipsec', 'wireguard',
+  'wg', 'openvpn', 'ovpn', 'anyconnect', 'fortigate', 'forti', 'pfsense', 'opnsense', 'sophos', 'checkpoint', 'palo',
+  'cisco', 'asa', 'mikrotik', 'ubnt', 'unifi', 'controller', 'switch', 'core', 'access', 'wan', 'dmz', 'edge1', 'edge2',
+  'pbx', 'voip', 'asterisk', 'freepbx', 'sip1', 'sip2', 'rtp', 'turn', 'stun', 'coturn', 'jitsi', 'bbb', 'webex', 'conf',
+  'conference', 'webinar', 'stream1', 'rtmp', 'hls', 'vod', 'ott', 'iptv', 'epg', 'cctv', 'dvr', 'alarm', 'access-control',
+  'door', 'gate', 'hr', 'payroll', 'finance', 'accounting', 'invoice', 'invoices', 'quote', 'quotes', 'sales', 'leads',
+  'procurement', 'inventory', 'stock', 'warehouse', 'wms', 'tms', 'fleet', 'gps', 'tracking', 'logistics', 'shipping',
+  'delivery', 'pos', 'kiosk', 'display', 'signage', 'menu', 'reservations', 'rooms', 'hotel', 'spa', 'gym', 'club',
+  'school1', 'student', 'students', 'staff', 'parent', 'parents', 'alumni', 'exam', 'exams', 'results', 'mobile-api',
+  'm-api', 'mobileapp', 'ios', 'android', 'apps', 'play', 'game', 'games', 'gaming', 'minecraft', 'mc', 'ts', 'ts3',
+  'teamspeak', 'mumble', 'irc', 'matrix', 'synapse', 'element', 'xmpp', 'jabber', 'mastodon', 'social', 'peertube',
+  'nextcloud', 'owncloud', 'seafile', 'syncthing', 'photos', 'photo', 'gallery', 'pics', 'music', 'audio', 'podcast',
+  'rss', 'feed', 'feeds', 'atom', 'sitemap', 'robots', 'amp', 'ab', 'abtest', 'experiment', 'beta2', 'alpha2', 'temp',
+  'tmp', 'testing', 'test1', 'test2', 'test3', 'dev1', 'devel', 'development', 'stg', 'stg1', 'uat1', 'uat2', 'qa1', 'qa2',
+  'perf', 'load', 'bench', 'demo1', 'demo2', 'trial', 'free', 'premium', 'pro', 'enterprise', 'business', 'partner',
+  'affiliate', 'affiliates', 'ref', 'referral', 'invite', 'join', 'signup', 'register', 'welcome', 'onboarding', 'start',
+  'get', 'try', 'download1', 'install', 'setup', 'update', 'updates', 'patch', 'patches', 'wsus', 'sccm', 'intune',
+  'mdm', 'mam', 'jamf', 'kace', 'pdq', 'ninja', 'rmm', 'remote1', 'rdp', 'rds', 'ts1', 'citrix', 'xenapp', 'storefront',
+  'netscaler', 'vdi', 'horizon', 'vcenter', 'esxi', 'esx', 'vmware', 'hyperv', 'proxmox', 'pve', 'xen', 'kvm', 'ovirt',
+  'openstack', 'cloudstack', 'aws', 'azure', 'gcp', 's3', 'blob', 'storage', 'minio', 'ceph', 'gluster', 'nfs', 'smb',
+  'cifs', 'san', 'iscsi', 'tape', 'veeam', 'bacula', 'restic', 'borg', 'rsync', 'dr', 'failover', 'standby', 'replica',
+  'slave', 'master', 'primary', 'secondary', 'read', 'write', 'db1', 'db2', 'db3', 'pg', 'postgres', 'postgresql', 'mariadb',
+  'mongo', 'mongodb', 'cassandra', 'couch', 'couchdb', 'influx', 'influxdb', 'timescale', 'clickhouse', 'neo4j', 'es',
+  'elasticsearch', 'opensearch', 'solr', 'sphinx', 'memcache', 'memcached', 'rabbit', 'rabbitmq', 'mq', 'amqp', 'kafka',
+  'nats', 'pulsar', 'celery', 'worker', 'workers', 'queue', 'jobs1', 'cron', 'scheduler', 'batch', 'etl', 'airflow',
+  'spark', 'hadoop', 'hdfs', 'hive', 'presto', 'trino', 'jupyter', 'notebook', 'ml', 'ai', 'gpu', 'model', 'models',
+  'inference', 'llm', 'bot', 'bots', 'webhook', 'webhooks', 'hooks', 'callback', 'ipn', 'notify', 'sms', 'mms', 'whatsapp',
+  'wa', 'telegram', 'tg', 'fb', 'facebook', 'ig', 'instagram', 'tw', 'twitter', 'x', 'li', 'linkedin', 'yt', 'youtube',
+  'tiktok', 'pinterest', 'snap', 'reddit', 'ads', 'ad', 'adserver', 'dsp', 'ssp', 'pixel', 'tag', 'tags', 'gtm', 'ga',
+  'tracking1', 'analytics1', 'matomo', 'piwik', 'plausible', 'umami', 'fathom', 'hotjar', 'clarity', 'optimize', 'seo',
+  'sem', 'ppc', 'cpc', 'crawl', 'crawler', 'spider', 'scraper', 'proxy1', 'proxy2', 'squid', 'cache', 'varnish', 'redis1',
+  'redis2', 'sentinel', 'consul', 'etcd', 'zookeeper', 'zk', 'nomad', 'mesos', 'marathon', 'swarm', 'compose', 'traefik',
+  'caddy', 'envoy', 'istio', 'linkerd', 'kong', 'tyk', 'apigee', 'gateway1', 'gateway2', 'bff', 'graph', 'grpc', 'rest',
+  'soap', 'wsdl', 'xml', 'json', 'rpc', 'jsonrpc', 'xmlrpc', 'ftp1', 'ftp2', 'ftps', 'tftp', 'scp', 'ssh', 'bastion',
+  'jump', 'jumphost', 'jumpbox', 'tunnel', 'ngrok', 'cloudflared', 'argo-tunnel', 'zt', 'zerotier', 'tailscale', 'ts-',
+  'headscale', 'netbird', 'nebula', 'mesh', 'overlay', 'ipam', 'netbox', 'phpipam', 'dhcp', 'dhcp1', 'dhcp2', 'ntp', 'time',
+  'ntp1', 'ntp2', 'pool', 'clock', 'gps1', 'pps', 'radio1', 'ham', 'sdr', 'weather', 'wx', 'aprs', 'adsb', 'ais', 'marine',
+  'solar', 'inverter', 'battery', 'ev', 'charger', 'meter', 'smartmeter', 'scada', 'plc', 'hmi', 'modbus', 'bacnet', 'opc',
+  'mqtt', 'broker', 'emqx', 'mosquitto', 'hivemq', 'thingsboard', 'node-red', 'nodered', 'homeassistant', 'home-assistant',
+  'openhab', 'domoticz', 'hubitat', 'smartthings', 'hue', 'sonos', 'roku', 'firetv', 'appletv', 'chromecast', 'kodi',
+  'jellyfin', 'emby', 'sonarr', 'radarr', 'lidarr', 'prowlarr', 'bazarr', 'overseerr', 'ombi', 'tautulli', 'transmission',
+  'qbittorrent', 'deluge', 'rtorrent', 'sabnzbd', 'nzbget', 'usenet', 'torrent', 'seedbox', 'pihole', 'adguard', 'unbound',
+  'bind', 'powerdns', 'pdns', 'knot', 'coredns', 'resolver', 'resolver1', 'resolver2', 'recursor', 'cache1', 'cache2']);
+const DKIM_SELECTORS = ['default', 'google', 'selector1', 'selector2', 'k1', 'k2', 'k3', 's1', 's2', 'mail', 'dkim', 'dkim1',
+  'dkim2', 'smtp', 'mx', 'zoho', 'zmail', 'mandrill', 'mailjet', 'mailo', 'mte1', 'mte2', 'hs1', 'hs2', 'krs', 'kl',
+  'kl2', 'cm', 'everlytickey1', 'everlytickey2', 'eversrv', 'protonmail', 'protonmail2', 'protonmail3', 'fm1', 'fm2', 'fm3',
+  'pm', 'pm1', 'pm2', 'postmark', 'sendgrid', 'sg', 'ses', 'amazonses', 'mailgun', 'mg', 'smtpapi', 'sparkpost', 'scph0120',
+  'scph1020', 'mailchimp', 'mc', 'brevo', 'sendinblue', 'mail1', 'mail2', 'mimecast', 'mimecast20230101', 'proofpoint',
+  'pp', 'ppe', 'office365', 'o365', 'outlook', 'microsoft', 'exchange', 'intercom', 'drip', 'convertkit', 'ck', 'klaviyo',
+  'omnisend', 'os', 'shopify', 'shop', 'ghost', 'substack', 'beehiiv', 'mailerlite', 'ml', 'activecampaign', 'ac', 'acsmtp',
+  'zendesk', 'zendesk1', 'zendesk2', 'zendeskverification', 'freshdesk', 'fd', 'hubspot', 'salesforce', 'sf', 'sfmc', 'et',
+  'exacttarget', 'marketo', 'mkto', 'pardot', 'pdt', 'eloqua', 'elq', 'customerio', 'cio', 'braze', 'iterable', 'sendy',
+  'listmonk', 'mautic', 'mtc', 'smtp2go', 'turbo-smtp', 'elastic', 'elasticemail', 'api', 'app', 'noreply', 'alerts',
+  'notifications', 'support', 'help', 'billing', 'invoice', 'test', 'dev', 'staging', '2023', '2024', '2025', '2026',
+  'key1', 'key2', 'sel1', 'sel2', 'selector', 'dkimkey', 'dk', 'dk1', 'dk2', 'd1', 'd2', 's', 'k', 'm', 'x', 'y', 'z'];
+const SRV_SERVICES = ['_sip._tcp', '_sip._udp', '_sip._tls', '_sips._tcp', '_sipfederationtls._tcp', '_sipinternaltls._tcp',
+  '_xmpp-client._tcp', '_xmpp-server._tcp', '_xmpps-client._tcp', '_xmpps-server._tcp', '_jabber._tcp', '_matrix._tcp',
+  '_matrix-fed._tcp', '_imap._tcp', '_imaps._tcp', '_pop3._tcp', '_pop3s._tcp', '_submission._tcp', '_submissions._tcp',
+  '_smtp._tcp', '_smtps._tcp', '_jmap._tcp', '_autodiscover._tcp', '_caldav._tcp', '_caldavs._tcp', '_carddav._tcp',
+  '_carddavs._tcp', '_ldap._tcp', '_ldaps._tcp', '_gc._tcp', '_kerberos._tcp', '_kerberos._udp', '_kpasswd._tcp',
+  '_kpasswd._udp', '_ntp._udp', '_http._tcp', '_https._tcp', '_ftp._tcp', '_ssh._tcp', '_sftp._tcp', '_minecraft._tcp',
+  '_teamspeak._udp', '_ts3._udp', '_mumble._tcp', '_stun._udp', '_stun._tcp', '_stuns._tcp', '_turn._udp', '_turn._tcp',
+  '_turns._tcp', '_h323cs._tcp', '_h323ls._udp', '_collab-edge._tls', '_cisco-uds._tcp', '_cuplogin._tcp', '_x-puppet._tcp',
+  '_nicname._tcp', '_whois._tcp', '_dns._udp', '_dns-llq._udp', '_dns-sd._udp', '_services._dns-sd._udp', '_pgpkey-https._tcp',
+  '_hkp._tcp', '_hkps._tcp', '_openpgpkey._tcp', '_rdp._tcp', '_vlmcs._tcp', '_wpad._tcp', '_sqlserver._tcp', '_mysql._tcp',
+  '_postgresql._tcp', '_mongodb._tcp', '_redis._tcp', '_amqp._tcp', '_amqps._tcp', '_mqtt._tcp', '_secure-mqtt._tcp',
+  '_coap._udp', '_ipp._tcp', '_ipps._tcp', '_printer._tcp', '_afpovertcp._tcp', '_smb._tcp', '_nfs._tcp', '_webdav._tcp',
+  '_webdavs._tcp', '_bittorrent._tcp', '_bittorrent-tracker._tcp', '_tftp._udp', '_syslog._udp', '_syslog._tcp', '_radius._udp',
+  '_radius._tcp', '_radsec._tcp', '_tacacs._tcp', '_snmp._udp', '_ipsec-ike._udp', '_wireguard._udp', '_openvpn._udp',
+  '_openvpn._tcp', '_ldap._tcp.dc._msdcs', '_kerberos._tcp.dc._msdcs', '_gc._tcp.Default-First-Site-Name._sites'];
+// Single-name TXT (and a few CNAME) probes used by mail, verification and policy protocols.
+const SPECIAL_TXT = ['_dmarc', '_domainkey', '_mta-sts', '_smtp._tls', 'default._bimi', '_acme-challenge', '_atproto',
+  '_dnslink', '_github-challenge', '_github-pages-challenge', '_spf', 'spf', '_amazonses', '_cf-custom-hostname',
+  '_vercel', '_netlify', '_heroku', '_pki-validation', '_sip', '_sips', '_adsp._domainkey', '_report._dmarc', '_tcp', '_udp',
+  '_tls', '_dkim', '_domainconnect', '_ms', '_msdcs', '_sites', '_globalsign-domain-verification',
+  '_dnsauth', '_cf-dns-verify', '_dcv', '_keybase', '_dmarc.mail', '_dmarc.www', 'mail._domainkey', 'dkim._domainkey',
+  '_validation', '_verification', '_acme-challenge.www', '_acme-challenge.mail', '_smtp._tls.mail', '_mta-sts.mail'];
+const SPECIAL_TXT_TYPES = ['TXT', 'CNAME', 'A', 'AAAA', 'SRV', 'NS'];
+
+// ---------- DoH resolvers ----------
+const RESOLVERS = {
+  google: {
+    label: 'Google',
+    url: (name, type, dnssec) => `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=${TYPES[type] || type}${dnssec ? '&do=1' : ''}`,
+    headers: {},
+  },
+  cloudflare: {
+    label: 'Cloudflare',
+    url: (name, type, dnssec) => `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${type}${dnssec ? '&do=1' : ''}`,
+    headers: { accept: 'application/dns-json' },
+  },
+};
+
+const el = id => document.getElementById(id);
+const state = {
+  records: new Map(),   // key -> record
+  zone: null,           // apex with trailing dot
+  input: null,
+  nsHosts: [],
+  delegations: new Set(),
+  sort: { key: 'name', dir: 1 },
+  activeTypes: new Set(),
+  abort: null,
+  done: 0, total: 0,
+  errors: 0,
+  logLines: [],
+  resolvers: [],
+  startedAt: 0,
+};
+
+// ---------- Name helpers ----------
+function fqdn(n) {
+  n = String(n || '').trim().toLowerCase();
+  if (!n) return '';
+  if (!n.endsWith('.')) n += '.';
+  return n;
+}
+function normalizeInput(raw) {
+  let s = String(raw || '').trim().toLowerCase();
+  if (!s) return '';
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//, '');   // scheme
+  s = s.split(/[/?#]/)[0];                        // path, query, fragment
+  s = s.replace(/^[^@]*@/, '');                   // user@ or mailbox@
+  s = s.replace(/:\d+$/, '');                     // port
+  s = s.replace(/^\.+|\.+$/g, '');
+  if (!/^[a-z0-9_*-]+(\.[a-z0-9_*-]+)*$/.test(s)) return '';
+  return s + '.';
+}
+function labelsOf(n) { return fqdn(n).slice(0, -1).split('.').filter(Boolean); }
+function parentOf(n) { const l = labelsOf(n); l.shift(); return l.length ? l.join('.') + '.' : '.'; }
+function underZone(name, zone) { return name === zone || name.endsWith('.' + zone); }
+function relative(name, zone) {
+  if (name === zone) return '@';
+  if (name.endsWith('.' + zone)) return name.slice(0, -(zone.length + 1));
+  return name;
+}
+
+// Resolver output differs: Google returns TXT unquoted, Cloudflare returns RFC 1035 quoted strings.
+// Everything is stored as the raw character string so the two merge, and re-quoted on output.
+function unquoteTxt(data) {
+  const s = String(data);
+  if (!s.startsWith('"')) return s;
+  const parts = [];
+  const re = /"((?:[^"\\]|\\.)*)"/g;
+  let m;
+  while ((m = re.exec(s))) parts.push(m[1].replace(/\\(.)/g, '$1'));
+  return parts.length ? parts.join('') : s;
+}
+function quoteTxt(raw) {
+  const chunks = [];
+  for (let i = 0; i < raw.length; i += 255) chunks.push('"' + raw.slice(i, i + 255).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"');
+  return chunks.join(' ') || '""';
+}
+function presentData(rec) {
+  return (rec.type === 'TXT' || rec.type === 'SPF') ? quoteTxt(rec.data) : rec.data;
+}
+
+function reverseName(ip) {
+  if (ip.includes(':')) {
+    const halves = ip.split('::');
+    let groups = halves[0] ? halves[0].split(':') : [];
+    const tail = halves[1] ? halves[1].split(':') : [];
+    if (halves.length > 1) groups = groups.concat(Array(8 - groups.length - tail.length).fill('0'), tail);
+    const hex = groups.map(g => g.padStart(4, '0')).join('');
+    return hex.split('').reverse().join('.') + '.ip6.arpa.';
+  }
+  return ip.split('.').reverse().join('.') + '.in-addr.arpa.';
+}
+
+// ---------- Querying ----------
+async function dohQuery(resolverKey, name, type, dnssec, signal) {
+  const r = RESOLVERS[resolverKey];
+  const res = await fetch(r.url(name, type, dnssec), { headers: r.headers, signal });
+  if (!res.ok) throw new Error(`${r.label} HTTP ${res.status} for ${name} ${type}`);
+  return res.json();
+}
+
+function addRecord(resolverKey, a) {
+  const type = typeName(a.type);
+  const name = fqdn(a.name);
+  const data = canonicalData(type, String(a.data));
+  const key = `${name}|${type}|${data}`;
+  let rec = state.records.get(key);
+  if (!rec) {
+    rec = { name, type, typeNum: a.type, ttl: a.TTL, data, sources: new Set() };
+    state.records.set(key, rec);
+  } else if (a.TTL < rec.ttl) rec.ttl = a.TTL;
+  rec.sources.add(RESOLVERS[resolverKey].label);
+  return rec;
+}
+
+async function runPool(tasks, concurrency, signal) {
+  let i = 0;
+  async function worker() {
+    while (i < tasks.length && !signal.aborted) {
+      const t = tasks[i++];
+      try { await t(); } catch (e) { if (e.name !== 'AbortError') { log(`! ${e.message}`); state.errors++; } }
+      state.done++;
+      if (state.done % 7 === 0 || state.done === state.total) renderProgress();
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, worker));
+}
+
+function makeTask(resolverKey, name, type, dnssec, signal, onAnswer) {
+  return async () => {
+    const j = await dohQuery(resolverKey, name, type, dnssec, signal);
+    for (const a of (j.Answer || [])) addRecord(resolverKey, a);
+    if (onAnswer) onAnswer(j);
+  };
+}
+
+// Walk up from the input name until a name answers its own SOA. That name is the zone apex.
+async function findZone(name, resolverKey, signal) {
+  let candidate = name;
+  let inputStatus = null;
+  while (labelsOf(candidate).length >= 2) {
+    let j;
+    try { j = await dohQuery(resolverKey, candidate, 'SOA', false, signal); }
+    catch (e) { if (e.name === 'AbortError') throw e; log(`! ${e.message}`); candidate = parentOf(candidate); continue; }
+    if (inputStatus === null) inputStatus = j.Status;
+    log(`SOA ${candidate} -> status ${j.Status}`);
+    const soa = (j.Answer || []).find(a => a.type === 6 && fqdn(a.name) === candidate);
+    if (soa) return { zone: candidate, soa: addRecord(resolverKey, soa), inputStatus };
+    const auth = (j.Authority || []).find(a => a.type === 6);
+    if (auth && j.Status !== 3) {
+      const owner = fqdn(auth.name);
+      if (underZone(candidate, owner) && labelsOf(owner).length >= 2) {
+        // Confirm the apex answers its own SOA rather than trusting a cached negative answer.
+        const k = await dohQuery(resolverKey, owner, 'SOA', false, signal).catch(e => { if (e.name === 'AbortError') throw e; return null; });
+        const s = k && (k.Answer || []).find(a => a.type === 6 && fqdn(a.name) === owner);
+        if (s) return { zone: owner, soa: addRecord(resolverKey, s), inputStatus };
+      }
+    }
+    candidate = parentOf(candidate);
+  }
+  return null;
+}
+
+async function dump() {
+  const raw = el('domain').value;
+  const input = normalizeInput(raw);
+  clearNotices();
+  if (!input) { notice('bad', 'Enter a domain name, hostname or URL.'); return; }
+
+  resetState();
+  state.input = input;
+  const resolverChoice = el('resolver').value;
+  state.resolvers = resolverChoice === 'both' ? ['google', 'cloudflare'] : [resolverChoice];
+  const dnssec = el('dnssec').checked;
+  const deep = el('deep').checked;
+  const doPtr = el('ptr').checked;
+  const extra = el('extra').value.split(/\r?\n/).map(s => s.trim().toLowerCase()).filter(Boolean);
+
+  state.abort = new AbortController();
+  const signal = state.abort.signal;
+  setRunning(true);
+  state.startedAt = Date.now();
+  setStatus(`Locating the zone for ${input} …`);
+
+  try {
+    let found = null;
+    for (const r of state.resolvers) { found = await findZone(input, r, signal); if (found) break; }
+    if (!found) {
+      notice('bad', `No zone found for ${input}. The name may not exist, or every DNS-over-HTTPS lookup failed (check the query log).`);
+      setStatus('Failed.');
+      return;
+    }
+    state.zone = found.zone;
+    state.soa = found.soa;
+    const show = n => n.replace(/\.$/, '');
+    if (found.inputStatus === 3) notice('warn', `${show(input)} does not exist (NXDOMAIN). Dumping its enclosing zone ${show(found.zone)} instead.`);
+    else if (found.zone !== input) notice('warn', `${show(input)} is inside the zone ${show(found.zone)}. Dumping the whole zone.`);
+    setStatus(`Zone ${found.zone}. Fetching name servers …`);
+
+    // Name servers first, so the summary and the glue rows exist before the sweep.
+    const nsSet = new Set();
+    await runPool(state.resolvers.map(r => makeTask(r, found.zone, 'NS', dnssec, signal, j => {
+      for (const a of (j.Answer || [])) if (a.type === 2) nsSet.add(fqdn(a.data));
+    })), 2, signal);
+    state.nsHosts = [...nsSet].sort();
+    const nsTasks = [];
+    for (const ns of state.nsHosts) for (const t of ['A', 'AAAA']) for (const r of state.resolvers) nsTasks.push(makeTask(r, ns, t, false, signal));
+    await runPool(nsTasks, 8, signal);
+
+    // The sweep.
+    const names = new Map();   // name -> Set(types)
+    const want = (n, types) => { const f = fqdn(n); if (!names.has(f)) names.set(f, new Set()); for (const t of types) names.get(f).add(t); };
+    const sub = l => l + '.' + found.zone;
+    want(found.zone, APEX_TYPES.concat(dnssec ? DNSSEC_TYPES : []));
+    want('*.' + found.zone, WILDCARD_TYPES);
+    if (input !== found.zone) want(input, HOST_TYPES);
+    for (const h of (deep ? HOSTS_DEEP : HOSTS_BASIC)) want(sub(h), HOST_TYPES);
+    for (const s of DKIM_SELECTORS) want(sub(s + '._domainkey'), ['TXT', 'CNAME']);
+    for (const s of SRV_SERVICES) want(sub(s), ['SRV']);
+    for (const s of SPECIAL_TXT) want(sub(s), SPECIAL_TXT_TYPES);
+    for (const x of extra) want(x.endsWith('.') ? x : (underZone(fqdn(x), found.zone) ? fqdn(x) : sub(x)), HOST_TYPES);
+    names.get(found.zone).delete('NS');   // already fetched
+
+    const tasks = [];
+    for (const [n, types] of names) for (const t of types) for (const r of state.resolvers) tasks.push(makeTask(r, n, t, dnssec, signal));
+    state.total = tasks.length;
+    state.done = 0;
+    setStatus(`Sweeping ${names.size} names × record types across ${state.resolvers.map(r => RESOLVERS[r].label).join(' + ')} …`);
+    showResults();
+    const ticker = setInterval(render, 700);
+    try { await runPool(tasks, 16, signal); } finally { clearInterval(ticker); }
+    if (signal.aborted) { setStatus('Stopped.'); render(); return; }
+
+    // Second pass: sub-zones delegated with NS get their own apex sweep, and every IP gets a PTR.
+    const delegated = [...state.records.values()].filter(r => r.type === 'NS' && r.name !== found.zone && underZone(r.name, found.zone)).map(r => r.name);
+    state.delegations = new Set(delegated);
+    const pass2 = [];
+    for (const d of state.delegations) for (const t of ['SOA', 'A', 'AAAA', 'MX', 'TXT']) for (const r of state.resolvers) pass2.push(makeTask(r, d, t, dnssec, signal));
+    if (doPtr) {
+      const ips = new Set([...state.records.values()].filter(r => r.type === 'A' || r.type === 'AAAA').map(r => r.data));
+      for (const ip of ips) for (const r of state.resolvers) pass2.push(makeTask(r, reverseName(ip), 'PTR', false, signal));
+    }
+    if (pass2.length) {
+      state.total += pass2.length;
+      setStatus(`Follow-up: ${state.delegations.size} delegated sub-zone(s), ${pass2.length} queries …`);
+      await runPool(pass2, 16, signal);
+    }
+    const secs = ((Date.now() - state.startedAt) / 1000).toFixed(1);
+    setStatus(signal.aborted ? 'Stopped.' : `Done in ${secs}s. ${state.records.size} unique records, ${state.errors} failed queries.`);
+  } catch (e) {
+    if (e.name !== 'AbortError') { notice('bad', e.message); log('! ' + e.message); }
+    setStatus('Stopped.');
+  } finally {
+    setRunning(false);
+    render();
+  }
+}
+
+// ---------- Classification ----------
+function scopeOf(rec) {
+  const z = state.zone;
+  if (!z) return 'ext';
+  if (rec.name.endsWith('.arpa.')) return 'rev';
+  if (!underZone(rec.name, z)) return 'ext';
+  if (rec.type === 'DS' && rec.name === z) return 'parent';
+  if (ZONE_EXCLUDED.has(rec.type)) return 'sig';
+  for (const d of state.delegations) {
+    if (rec.name === d) return rec.type === 'NS' || rec.type === 'DS' ? 'zone' : 'child';
+    if (rec.name.endsWith('.' + d)) return isGlueFor(rec, d) ? 'zone' : 'child';
+  }
+  return 'zone';
+}
+function isGlueFor(rec, delegation) {
+  if (rec.type !== 'A' && rec.type !== 'AAAA') return false;
+  return [...state.records.values()].some(n => n.type === 'NS' && n.name === delegation && n.data === rec.name);
+}
+const SCOPE_ORDER = ['zone', 'child', 'parent', 'sig', 'ext', 'rev'];
+function scopeRank(s) { const i = SCOPE_ORDER.indexOf(s); return String(i < 0 ? 9 : i); }
+const SCOPE_LABEL = { zone: 'zone', ext: 'external', rev: 'reverse', child: 'child zone', parent: 'parent zone', sig: 'dnssec' };
+
+// ---------- Zone file ----------
+const TYPE_ORDER = ['SOA', 'NS', 'A', 'AAAA', 'CNAME', 'DNAME', 'MX', 'TXT', 'SPF', 'SRV', 'CAA', 'HTTPS', 'SVCB', 'TLSA', 'SSHFP',
+  'NAPTR', 'PTR', 'HINFO', 'RP', 'LOC', 'URI', 'CERT', 'DNSKEY', 'CDS', 'CDNSKEY', 'NSEC3PARAM'];
+function typeRank(t) { const i = TYPE_ORDER.indexOf(t); return i < 0 ? 999 : i; }
+function zoneRecords() {
+  return [...state.records.values()].filter(r => scopeOf(r) === 'zone');
+}
+function buildZoneFile() {
+  const z = state.zone;
+  const recs = zoneRecords();
+  const soa = recs.find(r => r.type === 'SOA' && r.name === z);
+  const soaFields = soa ? soa.data.split(/\s+/) : [];
+  const minimum = soaFields.length === 7 ? Number(soaFields[6]) : null;
+  const ttls = recs.map(r => r.ttl).sort((a, b) => a - b);
+  const defaultTtl = minimum || (ttls.length ? ttls[Math.floor(ttls.length / 2)] : 3600);
+  const out = [];
+  out.push(`; Zone file for ${z}`);
+  out.push(`; Generated ${new Date().toISOString()} by DNS Dump`);
+  out.push(`; Method: DNS-over-HTTPS sweep via ${state.resolvers.map(r => RESOLVERS[r].label).join(' and ')}, not a zone transfer.`);
+  out.push(`; Only names that were guessed or discovered are present. Records outside the zone (CNAME targets, reverse lookups,`);
+  out.push(`; parent-zone DS, RRSIG/NSEC) are omitted. TTLs are as observed and may be mid-countdown from resolver caches.`);
+  out.push(`$ORIGIN ${z}`);
+  out.push(`$TTL ${defaultTtl}`);
+  out.push('');
+  if (soa && soaFields.length === 7) {
+    out.push(`@\t${soa.ttl}\tIN\tSOA\t${soaFields[0]} ${soaFields[1]} (`);
+    out.push(`\t\t\t\t${soaFields[2]}\t; serial`);
+    out.push(`\t\t\t\t${soaFields[3]}\t; refresh`);
+    out.push(`\t\t\t\t${soaFields[4]}\t; retry`);
+    out.push(`\t\t\t\t${soaFields[5]}\t; expire`);
+    out.push(`\t\t\t\t${soaFields[6]}\t; minimum`);
+    out.push(`\t\t\t\t)`);
+  } else if (soa) {
+    out.push(`@\t${soa.ttl}\tIN\tSOA\t${soa.data}`);
+  } else {
+    out.push(`; No SOA record was retrieved.`);
+  }
+  const rest = recs.filter(r => r.type !== 'SOA');
+  rest.sort((a, b) => {
+    const aApex = a.name === z ? 0 : 1, bApex = b.name === z ? 0 : 1;
+    if (aApex !== bApex) return aApex - bApex;
+    const n = relative(a.name, z).localeCompare(relative(b.name, z));
+    if (n) return n;
+    const t = typeRank(a.type) - typeRank(b.type);
+    if (t) return t;
+    return a.data.localeCompare(b.data);
+  });
+  let lastName = null;
+  for (const r of rest) {
+    if (r.name !== lastName) { out.push(''); lastName = r.name; }
+    out.push(`${relative(r.name, z)}\t${r.ttl}\tIN\t${r.type}\t${presentData(r)}`);
+  }
+  out.push('');
+  return out.join('\n');
+}
+
+// ---------- Rendering ----------
+function log(line) { state.logLines.push(line); if (state.logLines.length > 2000) state.logLines.shift(); }
+function setStatus(t) { el('statusText').textContent = t; }
+function notice(kind, text) { const d = document.createElement('div'); d.className = 'notice ' + kind; d.textContent = text; el('notices').appendChild(d); }
+function clearNotices() { el('notices').textContent = ''; }
+function setRunning(on) { el('run').disabled = on; el('stop').disabled = !on; el('domain').readOnly = on; }
+function renderProgress() {
+  const pct = state.total ? Math.min(100, Math.round(100 * state.done / state.total)) : 0;
+  el('progress').style.width = pct + '%';
+  el('counter').textContent = state.total ? `${state.done}/${state.total} queries` : '';
+}
+function showResults() { el('results').classList.remove('hidden'); el('summary').classList.remove('hidden'); }
+function resetState() {
+  state.records = new Map(); state.zone = null; state.soa = null; state.nsHosts = []; state.delegations = new Set();
+  state.done = 0; state.total = 0; state.errors = 0; state.logLines = []; state.activeTypes = new Set();
+  el('rows').textContent = ''; el('chips').textContent = ''; el('summary').textContent = ''; el('log').textContent = '';
+  renderProgress();
+}
+
+function visibleRecords() {
+  const q = el('filter').value.trim().toLowerCase();
+  const zoneOnly = el('zoneOnly').checked;
+  let list = [...state.records.values()].map(r => ({ r, scope: scopeOf(r) }));
+  if (zoneOnly) list = list.filter(x => x.scope === 'zone');
+  if (state.activeTypes.size) list = list.filter(x => state.activeTypes.has(x.r.type));
+  if (q) list = list.filter(x => x.r.name.includes(q) || x.r.type.toLowerCase().includes(q) || x.r.data.toLowerCase().includes(q));
+  const { key, dir } = state.sort;
+  list.sort((a, b) => {
+    let va, vb;
+    if (key === 'ttl') { va = a.r.ttl; vb = b.r.ttl; }
+    else if (key === 'type') { va = typeRank(a.r.type) * 1000 + a.r.typeNum; vb = typeRank(b.r.type) * 1000 + b.r.typeNum; }
+    else if (key === 'scope') { va = a.scope; vb = b.scope; }
+    else if (key === 'source') { va = [...a.r.sources].join(); vb = [...b.r.sources].join(); }
+    else if (key === 'data') { va = a.r.data; vb = b.r.data; }
+    else { va = scopeRank(a.scope) + relative(a.r.name, state.zone).split('.').reverse().join('.'); vb = scopeRank(b.scope) + relative(b.r.name, state.zone).split('.').reverse().join('.'); }
+    if (va < vb) return -dir; if (va > vb) return dir;
+    return typeRank(a.r.type) - typeRank(b.r.type) || a.r.data.localeCompare(b.r.data);
+  });
+  return list;
+}
+
+function render() {
+  renderProgress();
+  renderChips();
+  renderSummary();
+  renderTable();
+  el('log').textContent = state.logLines.slice(-400).join('\n');
+}
+
+function renderChips() {
+  const counts = new Map();
+  for (const r of state.records.values()) counts.set(r.type, (counts.get(r.type) || 0) + 1);
+  const types = [...counts.keys()].sort((a, b) => typeRank(a) - typeRank(b) || a.localeCompare(b));
+  const box = el('chips');
+  box.textContent = '';
+  for (const t of types) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip' + (state.activeTypes.has(t) ? ' on' : '');
+    b.textContent = `${t} ${counts.get(t)}`;
+    b.onclick = () => { state.activeTypes.has(t) ? state.activeTypes.delete(t) : state.activeTypes.add(t); render(); };
+    box.appendChild(b);
+  }
+  if (types.length) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'chip'; b.textContent = state.activeTypes.size ? 'clear filter' : `all ${state.records.size}`;
+    b.onclick = () => { state.activeTypes.clear(); render(); };
+    box.appendChild(b);
+  }
+}
+
+function renderTable() {
+  const list = visibleRecords();
+  const tbody = el('rows');
+  tbody.textContent = '';
+  const frag = document.createDocumentFragment();
+  for (const { r, scope } of list) {
+    const tr = document.createElement('tr');
+    if (scope !== 'zone') tr.className = 'outzone';
+    const cells = [
+      ['mono', scope === 'zone' || scope === 'child' ? relative(r.name, state.zone) : r.name],
+      ['mono', r.type],
+      ['ttl', String(r.ttl)],
+      ['data', presentData(r)],
+      ['', null],
+      ['', [...r.sources].join(', ')],
+    ];
+    for (const [cls, text] of cells) {
+      const td = document.createElement('td');
+      if (cls) td.className = cls;
+      if (text === null) {
+        const s = document.createElement('span'); s.className = 'scope ' + scope; s.textContent = SCOPE_LABEL[scope] || scope; td.appendChild(s);
+      } else td.textContent = text;
+      tr.appendChild(td);
+    }
+    frag.appendChild(tr);
+  }
+  tbody.appendChild(frag);
+  el('empty').classList.toggle('hidden', list.length > 0);
+  const zoneCount = zoneRecords().length;
+  el('footer').textContent = state.records.size
+    ? `${list.length} shown of ${state.records.size} records. ${zoneCount} belong to ${state.zone} and will be written to the zone file. Names are shown relative to the zone; "@" is the apex.`
+    : '';
+  for (const th of document.querySelectorAll('th[data-key]')) {
+    th.querySelector('.dir').textContent = th.dataset.key === state.sort.key ? (state.sort.dir > 0 ? '▲' : '▼') : '';
+  }
+}
+
+function card(title, items) {
+  const d = document.createElement('div');
+  d.className = 'card';
+  const h = document.createElement('h3'); h.textContent = title; d.appendChild(h);
+  const ul = document.createElement('ul');
+  for (const it of items) {
+    const li = document.createElement('li');
+    if (typeof it === 'string') li.textContent = it;
+    else {
+      li.textContent = it.text;
+      if (it.tag) { const s = document.createElement('span'); s.className = 'tag ' + (it.kind || ''); s.textContent = it.tag; li.appendChild(s); }
+    }
+    ul.appendChild(li);
+  }
+  if (!items.length) { const li = document.createElement('li'); li.textContent = 'none found'; li.style.color = 'var(--muted)'; ul.appendChild(li); }
+  d.appendChild(ul);
+  return d;
+}
+
+function renderSummary() {
+  const box = el('summary');
+  box.textContent = '';
+  if (!state.zone) return;
+  const z = state.zone;
+  const recs = [...state.records.values()];
+  const at = (name, type) => recs.filter(r => r.name === name && r.type === type);
+  const txtAt = name => at(name, 'TXT').map(r => r.data);
+
+  const soaItems = state.soa ? [`${state.soa.data.split(/\s+/)[0]} (primary)`, `${state.soa.data.split(/\s+/)[1].replace('.', '@').replace(/\.$/, '')} (contact)`, `serial ${state.soa.data.split(/\s+/)[2]}`] : [];
+  box.appendChild(card('Zone ' + z, soaItems));
+
+  box.appendChild(card('Name servers', state.nsHosts.map(ns => {
+    const ips = recs.filter(r => (r.type === 'A' || r.type === 'AAAA') && r.name === ns).map(r => r.data);
+    return { text: ns, tag: ips.join(' ') || 'no address found', kind: ips.length ? '' : 'warn' };
+  })));
+
+  const mx = at(z, 'MX').map(r => r.data).sort((a, b) => Number(a.split(' ')[0]) - Number(b.split(' ')[0]));
+  const spf = txtAt(z).filter(t => /^v=spf1\b/i.test(t));
+  const dmarc = txtAt('_dmarc.' + z).filter(t => /^v=dmarc1\b/i.test(t));
+  const dkim = recs.filter(r => r.name.includes('._domainkey.') && (r.type === 'TXT' || r.type === 'CNAME')).map(r => r.name.split('._domainkey.')[0]);
+  const mtaSts = txtAt('_mta-sts.' + z);
+  const tlsRpt = txtAt('_smtp._tls.' + z);
+  const bimi = txtAt('default._bimi.' + z);
+  const mail = [];
+  for (const m of mx) mail.push({ text: m, tag: 'MX' });
+  mail.push(spf.length ? { text: spf[0], tag: 'SPF', kind: 'ok' } : { text: 'no SPF record', kind: 'bad', tag: 'SPF' });
+  mail.push(dmarc.length ? { text: dmarc[0], tag: 'DMARC', kind: 'ok' } : { text: 'no DMARC record', kind: 'bad', tag: 'DMARC' });
+  mail.push({ text: dkim.length ? 'DKIM selectors: ' + [...new Set(dkim)].join(', ') : 'no DKIM selector found (guessed list only)', tag: 'DKIM', kind: dkim.length ? 'ok' : 'warn' });
+  if (mtaSts.length) mail.push({ text: mtaSts[0], tag: 'MTA-STS', kind: 'ok' });
+  if (tlsRpt.length) mail.push({ text: tlsRpt[0], tag: 'TLS-RPT', kind: 'ok' });
+  if (bimi.length) mail.push({ text: bimi[0], tag: 'BIMI', kind: 'ok' });
+  box.appendChild(card('Mail', mail));
+
+  const sec = [];
+  const ds = at(z, 'DS'), dnskey = at(z, 'DNSKEY'), caa = at(z, 'CAA');
+  sec.push({ text: ds.length ? `DNSSEC signed, ${ds.length} DS in parent, ${dnskey.length} DNSKEY` : 'DNSSEC not enabled (no DS record)', tag: 'DNSSEC', kind: ds.length ? 'ok' : 'warn' });
+  if (caa.length) for (const r of caa) sec.push({ text: r.data, tag: 'CAA', kind: 'ok' });
+  else sec.push({ text: 'no CAA restriction on certificate issuers', tag: 'CAA', kind: 'warn' });
+  const wild = recs.filter(r => r.name === '*.' + z);
+  sec.push({ text: wild.length ? 'wildcard present: ' + [...new Set(wild.map(r => r.type))].join(', ') : 'no wildcard record', tag: '*', kind: wild.length ? 'warn' : '' });
+  const https = at(z, 'HTTPS');
+  if (https.length) sec.push({ text: https[0].data, tag: 'HTTPS' });
+  if (state.delegations.size) sec.push({ text: 'delegated sub-zones: ' + [...state.delegations].map(d => relative(d, z)).join(', '), tag: 'NS' });
+  box.appendChild(card('Security', sec));
+
+  const hosts = new Set(recs.filter(r => underZone(r.name, z) && ['A', 'AAAA', 'CNAME'].includes(r.type)).map(r => r.name));
+  box.appendChild(card('Hosts found', [`${hosts.size} hostnames with addresses`, `${recs.filter(r => r.type === 'PTR').length} reverse records`, `${state.errors} failed queries`]));
+}
+
+// ---------- Export ----------
+function download(filename, text, mime) {
+  const blob = new Blob([text], { type: mime });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function zoneBase() { return (state.zone || 'zone').replace(/\.$/, ''); }
+function csvEscape(v) { v = String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+function toCsv() {
+  const rows = [['name', 'type', 'ttl', 'data', 'scope', 'source']];
+  for (const { r, scope } of visibleRecords()) rows.push([r.name, r.type, r.ttl, presentData(r), SCOPE_LABEL[scope], [...r.sources].join(' ')]);
+  return rows.map(row => row.map(csvEscape).join(',')).join('\n') + '\n';
+}
+function toJson() {
+  return JSON.stringify({
+    zone: state.zone, input: state.input, generated: new Date().toISOString(), nameServers: state.nsHosts,
+    resolvers: state.resolvers,
+    records: [...state.records.values()].map(r => ({ name: r.name, type: r.type, ttl: r.ttl, data: r.data, scope: SCOPE_LABEL[scopeOf(r)], sources: [...r.sources] })),
+  }, null, 2);
+}
+
+// ---------- Wiring ----------
+el('form').addEventListener('submit', e => { e.preventDefault(); if (!el('run').disabled) dump(); });
+el('stop').addEventListener('click', () => state.abort && state.abort.abort());
+el('filter').addEventListener('input', renderTable);
+el('zoneOnly').addEventListener('change', renderTable);
+for (const th of document.querySelectorAll('th[data-key]')) th.addEventListener('click', () => {
+  const k = th.dataset.key;
+  if (state.sort.key === k) state.sort.dir = -state.sort.dir; else state.sort = { key: k, dir: 1 };
+  renderTable();
+});
+el('exportZone').addEventListener('click', () => download(zoneBase() + '.zone', buildZoneFile(), 'text/dns'));
+el('copyZone').addEventListener('click', async () => {
+  const text = buildZoneFile();
+  try { await navigator.clipboard.writeText(text); el('copyZone').textContent = 'Copied'; }
+  catch { download(zoneBase() + '.zone', text, 'text/dns'); }
+  setTimeout(() => { el('copyZone').textContent = 'Copy zone file'; }, 1500);
+});
+el('exportCsv').addEventListener('click', () => download(zoneBase() + '-dns.csv', toCsv(), 'text/csv'));
+el('exportJson').addEventListener('click', () => download(zoneBase() + '-dns.json', toJson(), 'application/json'));
+
+const params = new URLSearchParams(location.search);
+if (params.get('d')) { el('domain').value = params.get('d'); dump(); }
+
+window.dnsDump = { state, buildZoneFile, normalizeInput, unquoteTxt, quoteTxt, reverseName, findZone, dump };
+</script>
+</body>
+</html>
