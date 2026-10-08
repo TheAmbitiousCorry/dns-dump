@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src https://dns.google https://cloudflare-dns.com; base-uri 'none'; form-action 'none'">
 <title>DNS Dump</title>
 <style>
   :root {
@@ -382,10 +383,25 @@ function unquoteTxt(data) {
   while ((m = re.exec(s))) parts.push(m[1].replace(/\\(.)/g, '$1'));
   return parts.length ? parts.join('') : s;
 }
+// A TXT character-string holds at most 255 octets of UTF-8, so chunk by bytes, then escape each chunk on its
+// own so an escape pair is never split across two strings.
+function utf8Length(ch) { const c = ch.codePointAt(0); return c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4; }
 function quoteTxt(raw) {
   const chunks = [];
-  for (let i = 0; i < raw.length; i += 255) chunks.push('"' + raw.slice(i, i + 255).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"');
-  return chunks.join(' ') || '""';
+  let cur = '', bytes = 0;
+  for (const ch of raw) {
+    const n = utf8Length(ch);
+    if (bytes + n > 255) { chunks.push(cur); cur = ''; bytes = 0; }
+    cur += ch; bytes += n;
+  }
+  chunks.push(cur);
+  return chunks.map(c => '"' + c.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"').join(' ');
+}
+// Spreadsheets run a cell that starts with = + - @ as a formula; a quote prefix keeps hostile TXT data inert.
+function csvEscape(v) {
+  v = String(v);
+  if (/^[=+\-@\t\r]/.test(v)) v = "'" + v;
+  return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
 }
 function canonicalData(type, data) {
   const spec = rr(type);
@@ -432,7 +448,7 @@ async function dohQuery(resolverKey, name, type, dnssec, signal) {
 function addRecord(resolverKey, a) {
   const type = typeName(a.type);
   const name = fqdn(a.name);
-  const data = canonicalData(type, String(a.data));
+  const data = canonicalData(type, String(a.data).replace(/[\r\n]+/g, ' '));
   const key = `${name}|${type}|${data}`;
   let rec = state.records.get(key);
   if (!rec) {
@@ -848,17 +864,19 @@ function download(filename, text, mime) {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 function zoneBase() { return (state.zone || 'zone').replace(/\.$/, ''); }
-function csvEscape(v) { v = String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+// CSV and JSON both export the rows the table currently shows, so a filter narrows every export the same way.
+function exportRows() {
+  return visibleRecords().map(({ r, scope }) => ({ name: r.name, type: r.type, ttl: r.ttl, data: r.data, scope: SCOPE_LABEL[scope], sources: [...r.sources] }));
+}
 function toCsv() {
   const rows = [['name', 'type', 'ttl', 'data', 'scope', 'source']];
-  for (const { r, scope } of visibleRecords()) rows.push([r.name, r.type, r.ttl, presentData(r), SCOPE_LABEL[scope], [...r.sources].join(' ')]);
+  for (const r of exportRows()) rows.push([r.name, r.type, r.ttl, rr(r.type).text ? quoteTxt(r.data) : r.data, r.scope, r.sources.join(' ')]);
   return rows.map(row => row.map(csvEscape).join(',')).join('\n') + '\n';
 }
 function toJson() {
   return JSON.stringify({
     zone: state.zone, input: state.input, generated: new Date().toISOString(), nameServers: state.nsHosts,
-    resolvers: state.resolvers,
-    records: [...state.records.values()].map(r => ({ name: r.name, type: r.type, ttl: r.ttl, data: r.data, scope: SCOPE_LABEL[scopeOf(r)], sources: [...r.sources] })),
+    resolvers: state.resolvers, filtered: exportRows().length !== state.records.size, records: exportRows(),
   }, null, 2);
 }
 

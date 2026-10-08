@@ -9,7 +9,7 @@ A single HTML file that finds a domain's zone and name servers, pulls every DNS 
 1. Open `index.html` in a browser, or host it anywhere static files are served.
 2. Type a domain, hostname or URL and press **Dump**. `mail.example.com` and `https://www.example.com/path` both resolve to the zone `example.com`.
 3. Wait for the status line to read **Done**. A run takes about 15 seconds.
-4. Press **Download zone file**, or **CSV** or **JSON**.
+4. Press **Download zone file**, or **CSV** or **JSON**. CSV and JSON export the rows the table shows, so a filter or type chip narrows them.
 
 To open the page with a domain prefilled and running, add `?d=` to the URL:
 
@@ -65,12 +65,13 @@ The header comments state the method and the date. TTLs are the values the resol
 
 ## Development
 
-The whole tool is `index.html`. There is no build step. Pure helpers are exposed on `window.dnsDump` for testing from the console or a headless browser:
+The whole tool is `index.html`. There is no build step. Run the tests with `node --test`. They load the script up to the rendering section and exercise the pure helpers. The same helpers are exposed on `window.dnsDump` (frozen, `version: 1`) for use from the console or a headless browser:
 
 ```js
 dnsDump.normalizeInput('https://www.Example.com/x')   // "www.example.com."
 dnsDump.quoteTxt('v=spf1 -all')                        // '"v=spf1 -all"'
 dnsDump.buildZoneFile()                                // after a run
+dnsDump.getRecords()                                   // snapshot of every record with its scope
 ```
 
 ## License

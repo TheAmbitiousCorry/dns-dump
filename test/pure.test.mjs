@@ -12,7 +12,7 @@ const pure = script.slice(0, script.indexOf('// ---------- Rendering'));
 function load() {
   return new Function(pure + `;
     return { state, RR, APEX_TYPES, HOST_TYPES, DNSSEC_TYPES, normalizeInput, quoteTxt, unquoteTxt, canonicalData,
-      relative, scopeOf, buildZoneFile, reverseName, parseSoa, addRecord, typeName };`)();
+      relative, scopeOf, buildZoneFile, reverseName, parseSoa, addRecord, typeName, csvEscape };`)();
 }
 function zone(api, apex, delegations = []) {
   api.state.zone = apex;
@@ -51,6 +51,26 @@ test('TXT round trip with a quote and a backslash straddling the chunk boundary'
   for (const raw of ['a'.repeat(254) + '"' + 'b'.repeat(50), 'a'.repeat(254) + '\\' + 'b'.repeat(50), 'x\\y"z']) {
     assert.equal(unquoteTxt(quoteTxt(raw)), raw);
   }
+});
+test('TXT chunks are limited by UTF-8 bytes, not characters', () => {
+  const { quoteTxt, unquoteTxt } = load();
+  const raw = 'é'.repeat(200);
+  const strings = quoteTxt(raw).split('" "');
+  assert.equal(strings.length, 2);
+  assert.equal(Buffer.byteLength(strings[0].slice(1)), 254, 'first string holds 127 two-byte characters');
+  assert.equal(unquoteTxt(quoteTxt(raw)), raw);
+});
+test('csvEscape neutralises formula prefixes and quotes commas', () => {
+  const { csvEscape } = load();
+  assert.equal(csvEscape('=HYPERLINK("http://x")'), `"'=HYPERLINK(""http://x"")"`);
+  assert.equal(csvEscape('-1'), "'-1");
+  assert.equal(csvEscape('v=spf1 a, b'), '"v=spf1 a, b"');
+  assert.equal(csvEscape('plain'), 'plain');
+});
+test('addRecord strips line breaks from resolver data', () => {
+  const api = load();
+  api.addRecord('google', { name: 'example.com.', type: 257, TTL: 1, data: '0 issue "x"\n$INCLUDE /etc/passwd' });
+  assert.equal([...api.state.records.values()][0].data, '0 issue "x" $INCLUDE /etc/passwd');
 });
 test('unquoteTxt joins several quoted strings and leaves unquoted text alone', () => {
   const { unquoteTxt } = load();
