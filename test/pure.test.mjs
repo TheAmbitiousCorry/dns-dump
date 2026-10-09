@@ -12,7 +12,7 @@ const pure = script.slice(0, script.indexOf('// ---------- Rendering'));
 function load() {
   return new Function(pure + `;
     return { state, RR, APEX_TYPES, HOST_TYPES, DNSSEC_TYPES, normalizeInput, quoteTxt, unquoteTxt, canonicalData,
-      relative, scopeOf, buildZoneFile, reverseName, parseSoa, addRecord, typeName, csvEscape };`)();
+      relative, scopeOf, buildZoneFile, reverseName, parseSoa, addRecord, typeName, csvEscape, dohQueryRetry, BACKOFF, throttle, makeTask, resetThrottle };`)();
 }
 function zone(api, apex, delegations = []) {
   api.state.zone = apex;
@@ -157,4 +157,57 @@ test('registry: every type has a wire code and the sweep lists derive from it', 
   assert.ok(APEX_TYPES.includes('SOA') && !APEX_TYPES.includes('RRSIG'));
   assert.deepEqual(HOST_TYPES.sort(), ['A', 'AAAA', 'CAA', 'CNAME', 'HTTPS', 'MX', 'NS', 'SRV', 'TXT']);
   assert.deepEqual(DNSSEC_TYPES, ['RRSIG', 'NSEC', 'NSEC3']);
+});
+
+test('backoff: a refused query is retried after a shared pause that doubles, and the answer comes back', async () => {
+  const api = load();
+  api.BACKOFF.base = 20; api.BACKOFF.max = 200;
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async url => { calls.push(Date.now()); return calls.length < 3 ? { ok: false, status: 429 } : { ok: true, json: async () => ({ Status: 0, Answer: [] }) }; };
+  try {
+    const j = await api.dohQueryRetry('google', 'example.com.', 'A', false, undefined);
+    assert.deepEqual(j, { Status: 0, Answer: [] });
+    assert.equal(calls.length, 3, 'two refusals then success');
+    assert.ok(calls[1] - calls[0] >= 20 && calls[2] - calls[1] >= 40, `pauses grew: ${calls[1] - calls[0]}ms then ${calls[2] - calls[1]}ms`);
+    assert.equal(api.throttle.google.delay, 40);
+    assert.equal(api.state.retries, 2);
+  } finally { globalThis.fetch = realFetch; }
+});
+test('backoff: a 400 is not retried and the attempt cap ends a query that never succeeds', async () => {
+  const api = load();
+  api.BACKOFF.base = 1; api.BACKOFF.max = 2; api.BACKOFF.attempts = 3;
+  const realFetch = globalThis.fetch;
+  let n = 0;
+  globalThis.fetch = async () => { n++; return { ok: false, status: 400 }; };
+  try {
+    await assert.rejects(api.dohQueryRetry('google', 'x.', 'A', false, undefined), /HTTP 400/);
+    assert.equal(n, 1, 'one attempt for a 400');
+    n = 0; globalThis.fetch = async () => { n++; return { ok: false, status: 503 }; };
+    await assert.rejects(api.dohQueryRetry('cloudflare', 'x.', 'A', false, undefined), /HTTP 503/);
+    assert.equal(n, 3, 'attempts capped');
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test('backoff: a resolver that never recovers is marked down and its queries fall back or are skipped', async () => {
+  const api = load();
+  api.BACKOFF.base = 1; api.BACKOFF.max = 2; api.BACKOFF.giveUpAfter = 3; api.BACKOFF.attempts = 50;
+  const realFetch = globalThis.fetch;
+  const hits = { google: 0, cloudflare: 0 };
+  globalThis.fetch = async url => {
+    if (url.startsWith('https://dns.google')) { hits.google++; return { ok: false, status: 502 }; }
+    hits.cloudflare++; return { ok: true, json: async () => ({ Status: 0, Answer: [{ name: 'example.com', type: 1, TTL: 1, data: '1.2.3.4' }] }) };
+  };
+  try {
+    api.state.resolvers = ['google'];
+    await api.makeTask('google', 'example.com.', 'A', false, undefined)();
+    assert.equal(api.throttle.google.down, true, 'google marked down');
+    assert.equal(api.state.rerouted, 1, 'single-resolver mode reroutes');
+    assert.equal(hits.cloudflare, 1);
+    assert.equal([...api.state.records.values()][0].data, '1.2.3.4', 'answer arrived via the fallback');
+    api.state.resolvers = ['google', 'cloudflare'];
+    await api.makeTask('google', 'example.com.', 'AAAA', false, undefined)();
+    assert.equal(api.state.skipped, 1, 'merged mode skips, the cloudflare task covers it');
+    assert.equal(hits.cloudflare, 1, 'no extra fallback request in merged mode');
+  } finally { globalThis.fetch = realFetch; }
 });

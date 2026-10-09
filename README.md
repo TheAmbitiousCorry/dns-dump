@@ -62,6 +62,7 @@ The header comments state the method and the date. TTLs are the values the resol
 - A browser cannot do a zone transfer or query an authoritative server directly. Only names the tool guesses or discovers appear. Unusual hostnames are missed unless you add them under **Extra hostnames to probe**.
 - Every query goes to Google and Cloudflare. Do not use the tool on a domain whose hostnames must stay private.
 - Google rejects the mnemonic for some record types, so the tool sends numeric type codes to Google.
+- A large sweep can trip a resolver's per-client limit. When a resolver refuses a query, every worker on that resolver pauses, the pause doubles on each further refusal up to 30 seconds, and the query is retried up to 8 times. The status line shows the pause. If a resolver is still refusing after 7 pauses (about 90 seconds) it is marked unavailable for the run: in merged mode the other resolver already carries every query, and in single-resolver mode the remaining queries go to the other resolver with a notice.
 
 ## Development
 

@@ -356,6 +356,9 @@ const state = {
   errors: 0,
   answered: 0,
   completed: 0,
+  retries: 0,
+  skipped: 0,
+  rerouted: 0,
   logLines: [],
   resolvers: [],
   startedAt: 0,
@@ -454,6 +457,7 @@ function reverseName(ip) {
 }
 
 // ---------- Querying ----------
+function log(line) { state.logLines.push(line); if (state.logLines.length > 2000) state.logLines.shift(); }
 const isAbort = e => e && e.name === 'AbortError';
 async function dohQuery(resolverKey, name, type, dnssec, signal) {
   const r = RESOLVERS[resolverKey];
@@ -490,44 +494,114 @@ async function runPool(tasks, concurrency, signal) {
   await Promise.all(Array.from({ length: concurrency }, worker));
 }
 
-// A resolver occasionally drops one request (a 5xx, a response without CORS headers, or a 429 when a big
-// sweep trips its per-client limit); one retry after a pause clears most of them.
+// A big sweep can trip a resolver's per-client limit, which shows as 429s, 5xxs or responses without CORS
+// headers. Each resolver has one shared pause: the first fresh failure sets it, every worker on that resolver
+// waits it out, and it doubles on each failure that arrives after the pause ended. A run of successes decays
+// it. A query retries until it succeeds or hits BACKOFF.attempts.
+// After giveUpAfter consecutive pauses with no success (about 90 s at the defaults) the resolver is marked
+// down for the rest of the run: in merged mode the other resolver already carries every query, in
+// single-resolver mode the remaining queries are rerouted to the other resolver.
+const BACKOFF = { base: 1000, max: 30000, attempts: 8, recoverAfter: 40, giveUpAfter: 7 };
+const throttle = Object.fromEntries(Object.keys(RESOLVERS).map(k => [k, { until: 0, delay: 0, okStreak: 0, pauses: 0, down: false }]));
+const resetThrottle = () => { for (const t of Object.values(throttle)) Object.assign(t, { until: 0, delay: 0, okStreak: 0, pauses: 0, down: false }); };
+const abortError = () => new DOMException('Aborted', 'AbortError');
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return reject(abortError());
+    const t = setTimeout(resolve, ms);
+    if (signal) signal.addEventListener('abort', () => { clearTimeout(t); reject(abortError()); }, { once: true });
+  });
+}
+const retryable = e => !/HTTP 4(?!29)\d\d/.test(e.message);
+class ResolverDown extends Error { constructor(key) { super(`${RESOLVERS[key].label} unavailable`); this.resolver = key; } }
 async function dohQueryRetry(resolverKey, name, type, dnssec, signal) {
-  try { return await dohQuery(resolverKey, name, type, dnssec, signal); }
-  catch (e) {
-    if (isAbort(e)) throw e;
-    await new Promise(r => setTimeout(r, /429/.test(e.message) ? 1500 : 400));
-    return dohQuery(resolverKey, name, type, dnssec, signal);
+  const t = throttle[resolverKey];
+  for (let attempt = 1; ; attempt++) {
+    while (Date.now() < t.until && !t.down) await sleep(t.until - Date.now(), signal);
+    if (t.down) throw new ResolverDown(resolverKey);
+    try {
+      const j = await dohQuery(resolverKey, name, type, dnssec, signal);
+      t.pauses = 0;
+      if (t.delay && ++t.okStreak >= BACKOFF.recoverAfter) { t.delay = Math.floor(t.delay / 2); t.okStreak = 0; }
+      return j;
+    } catch (e) {
+      if (isAbort(e) || !retryable(e) || attempt >= BACKOFF.attempts) throw e;
+      if (Date.now() >= t.until) {
+        t.delay = Math.min(t.delay ? t.delay * 2 : BACKOFF.base, BACKOFF.max);
+        t.until = Date.now() + t.delay;
+        t.okStreak = 0;
+        t.pauses++;
+        const label = RESOLVERS[resolverKey].label;
+        if (t.pauses >= BACKOFF.giveUpAfter) { t.down = true; log(`~ ${label} still refusing after ${t.pauses} pauses; giving up on it for this run`); throw new ResolverDown(resolverKey); }
+        log(`~ ${label} refused a query (${e.message.replace(/ for .*$/, '')}); pausing ${t.delay / 1000}s`);
+      }
+      state.retries++;
+    }
   }
+}
+// Where a query goes when its resolver is down: nowhere in merged mode (the other resolver has the same
+// query), otherwise the other resolver.
+function fallbackResolver(key) {
+  if (state.resolvers.length > 1) return null;
+  return Object.keys(RESOLVERS).find(k => k !== key && !throttle[k].down) || null;
+}
+function throttleNote() {
+  const now = Date.now();
+  return Object.keys(throttle).map(k => throttle[k].down ? `${RESOLVERS[k].label} unavailable` : throttle[k].until > now ? `${RESOLVERS[k].label} rate limited, pausing ${Math.ceil((throttle[k].until - now) / 1000)}s` : '').filter(Boolean).join('; ');
 }
 function makeTask(resolverKey, name, type, dnssec, signal, onAnswer) {
   return async () => {
-    const j = await dohQueryRetry(resolverKey, name, type, dnssec, signal);
-    for (const a of (j.Answer || [])) addRecord(resolverKey, a);
-    if (onAnswer) onAnswer(j);
+    let key = resolverKey;
+    for (;;) {
+      if (throttle[key].down) {
+        const alt = fallbackResolver(key);
+        if (!alt) { state.skipped++; return; }
+        state.rerouted++; key = alt;
+      }
+      try {
+        const j = await dohQueryRetry(key, name, type, dnssec, signal);
+        for (const a of (j.Answer || [])) addRecord(key, a);
+        if (onAnswer) onAnswer(j);
+        return;
+      } catch (e) {
+        if (!(e instanceof ResolverDown)) throw e;
+      }
+    }
   };
 }
 
+// One query through whichever resolver is still answering: the selected ones first, then any other.
+async function anyResolverQuery(name, type, signal) {
+  const order = [...state.resolvers, ...Object.keys(RESOLVERS).filter(k => !state.resolvers.includes(k))];
+  let down = null;
+  for (const key of order) {
+    if (throttle[key].down) continue;
+    try { return { key, j: await dohQueryRetry(key, name, type, false, signal) }; }
+    catch (e) { if (e instanceof ResolverDown) { down = e; continue; } throw e; }
+  }
+  throw down || new Error('No resolver available');
+}
+
 // Walk up from the input name until a name answers its own SOA. That name is the zone apex.
-async function findZone(name, resolverKey, signal) {
+async function findZone(name, signal) {
   let candidate = name;
   let inputStatus = null;
   while (labelsOf(candidate).length >= 2) {
-    let j;
-    try { j = await dohQuery(resolverKey, candidate, 'SOA', false, signal); }
+    let key, j;
+    try { ({ key, j } = await anyResolverQuery(candidate, 'SOA', signal)); }
     catch (e) { if (isAbort(e)) throw e; log(`! ${e.message}`); candidate = parentOf(candidate); continue; }
     if (inputStatus === null) inputStatus = j.Status;
     log(`SOA ${candidate} -> status ${j.Status}`);
     const soa = (j.Answer || []).find(a => a.type === TYPES.SOA && fqdn(a.name) === candidate);
-    if (soa) return { zone: candidate, soa: addRecord(resolverKey, soa), inputStatus };
+    if (soa) return { zone: candidate, soa: addRecord(key, soa), inputStatus };
     const auth = (j.Authority || []).find(a => a.type === TYPES.SOA);
     if (auth && j.Status !== 3) {
       const owner = fqdn(auth.name);
       if (underZone(candidate, owner) && labelsOf(owner).length >= 2) {
         // Confirm the apex answers its own SOA rather than trusting a cached negative answer.
-        const k = await dohQuery(resolverKey, owner, 'SOA', false, signal).catch(e => { if (isAbort(e)) throw e; return null; });
-        const s = k && (k.Answer || []).find(a => a.type === TYPES.SOA && fqdn(a.name) === owner);
-        if (s) return { zone: owner, soa: addRecord(resolverKey, s), inputStatus };
+        const k = await anyResolverQuery(owner, 'SOA', signal).catch(e => { if (isAbort(e)) throw e; return null; });
+        const s = k && (k.j.Answer || []).find(a => a.type === TYPES.SOA && fqdn(a.name) === owner);
+        if (s) return { zone: owner, soa: addRecord(k.key, s), inputStatus };
       }
     }
     candidate = parentOf(candidate);
@@ -558,8 +632,7 @@ async function dump() {
   setStatus(`Locating the zone for ${input} …`);
 
   try {
-    let found = null;
-    for (const r of state.resolvers) { found = await findZone(input, r, signal); if (found) break; }
+    const found = await findZone(input, signal);
     if (!found) {
       if (signal.aborted) { setStatus('Stopped.'); return; }
       if (state.answered === 0) notice('bad', 'Every DNS-over-HTTPS lookup failed. Check your network, then open the query log below for the errors.');
@@ -603,7 +676,7 @@ async function dump() {
     state.done = 0;
     setStatus(`Sweeping ${names.size} names × record types across ${state.resolvers.map(r => RESOLVERS[r].label).join(' + ')} …`);
     showResults();
-    const ticker = setInterval(render, 700);
+    const ticker = setInterval(() => { renderProgress(); render(); }, 700);
     try { await runPool(tasks, 16, signal); } finally { clearInterval(ticker); }
     if (signal.aborted) { setStatus('Stopped.'); render(); return; }
 
@@ -619,10 +692,13 @@ async function dump() {
     if (pass2.length) {
       state.done = 0; state.total = pass2.length;
       setStatus(`Follow-up: ${state.delegations.size} delegated sub-zone(s), ${pass2.length} queries …`);
-      await runPool(pass2, 16, signal);
+      const ticker2 = setInterval(renderProgress, 700);
+      try { await runPool(pass2, 16, signal); } finally { clearInterval(ticker2); }
     }
     const secs = ((Date.now() - state.startedAt) / 1000).toFixed(1);
-    setStatus(signal.aborted ? 'Stopped.' : `Done in ${secs}s. ${state.records.size} unique records, ${state.errors} failed queries.`);
+    const down = Object.keys(throttle).filter(k => throttle[k].down).map(k => RESOLVERS[k].label);
+    if (down.length) notice('warn', `${down.join(' and ')} stopped answering part way through. ${state.rerouted ? `${state.rerouted} queries were rerouted to the other resolver.` : `Those queries were answered by the other resolver only.`}`);
+    setStatus(signal.aborted ? 'Stopped.' : `Done in ${secs}s. ${state.records.size} unique records, ${state.retries} retried, ${state.errors} failed${state.skipped ? `, ${state.skipped} skipped` : ''}.`);
   } catch (e) {
     if (!isAbort(e)) { notice('bad', e.message); log('! ' + e.message); }
     setStatus('Stopped.');
@@ -707,7 +783,6 @@ function buildZoneFile() {
 }
 
 // ---------- Rendering ----------
-function log(line) { state.logLines.push(line); if (state.logLines.length > 2000) state.logLines.shift(); }
 function setStatus(t) { el('statusText').textContent = t; }
 function notice(kind, text) { const d = document.createElement('div'); d.className = 'notice ' + kind; d.textContent = text; el('notices').appendChild(d); }
 function clearNotices() { el('notices').textContent = ''; }
@@ -719,12 +794,14 @@ function markInvalid(on) { el('domain').setAttribute('aria-invalid', on ? 'true'
 function renderProgress() {
   const pct = state.total ? Math.min(100, Math.round(100 * state.done / state.total)) : 0;
   el('progress').style.width = pct + '%';
-  el('counter').textContent = state.completed ? `${state.completed} queries` : '';
+  const note = throttleNote();
+  el('counter').textContent = (state.completed ? `${state.completed} queries` : '') + (note ? ` · ${note}` : '') + (state.retries && !note ? ` · ${state.retries} retried` : '');
 }
 function showResults() { el('results').classList.remove('hidden'); el('summary').classList.remove('hidden'); }
 function resetState() {
   state.records = new Map(); state.zone = null; state.soa = null; state.nsHosts = []; state.delegations = new Set();
-  state.done = 0; state.total = 0; state.errors = 0; state.answered = 0; state.completed = 0; state.logLines = []; state.activeTypes = new Set();
+  state.done = 0; state.total = 0; state.errors = 0; state.answered = 0; state.completed = 0; state.retries = 0; state.skipped = 0; state.rerouted = 0;
+  resetThrottle(); state.logLines = []; state.activeTypes = new Set();
   el('rows').textContent = ''; el('chips').textContent = ''; el('summary').textContent = ''; el('log').textContent = '';
   el('results').classList.add('hidden'); el('summary').classList.add('hidden');
   renderProgress();
